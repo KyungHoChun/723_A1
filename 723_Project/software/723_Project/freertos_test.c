@@ -18,6 +18,13 @@
 // Definition of Task Stacks
 #define   TASK_STACKSIZE       2048
 
+
+// roc value and frequency value
+//typedef struct{
+//	unsigned int rocValue;
+//	unsigned int newFreq;
+//}freqValues;
+
 // Definition of Task Priorities
 #define PRINT_STATUS_TASK_PRIORITY 14
 #define GETSEM_TASK1_PRIORITY 13
@@ -33,11 +40,23 @@
 #define   MSG_QUEUE_SIZE  30
 QueueHandle_t msgqueue;
 
+// Definition of Shed Queue
+#define SHED_QUEUE_SIZE 100
+QueueHandle_t shedqueue;
+
 // used to delete a task
 TaskHandle_t xHandle;
 
 // Definition of Semaphore
 SemaphoreHandle_t shared_resource_sem;
+
+/* Queue Definitions */
+xQueueHandle qNewFreq;
+xQueueHandle qThreshold;
+xQueueHandle qShed;
+xQueueHandle qLoad;
+xQueueHandle qTiming;
+xQueueHandle qResp;
 
 // globals variables
 unsigned int number_of_messages_sent = 0;
@@ -48,8 +67,12 @@ unsigned int getsem_task2_got_sem = 0;
 char sem_owner_task_name[20];
 
 void freq_relay(void);
+void NetworkStatusTask();
+void LoadManagerTask();
 
-// Local Function Prototypes
+static QueueHandle_t Q_freq_data;
+
+/* Local Function Prototypes */
 int initOSDataStructs(void);
 int initCreateTasks(void);
 
@@ -133,25 +156,6 @@ void receive_task2(void *pvParameters)
 	}
 }
 
-int main(int argc, char* argv[], char* envp[])
-{
-	initOSDataStructs();
-	initCreateTasks();
-	alt_irq_register(FREQUENCY_ANALYSER_IRQ, 0, freq_relay);
-	vTaskStartScheduler();
-	for (;;);
-	return 0;
-}
-
-// This function simply creates a message queue and a semaphore
-int initOSDataStructs(void)
-{
-	msgqueue = xQueueCreate( MSG_QUEUE_SIZE, sizeof( void* ) );
-	shared_resource_sem = xSemaphoreCreateCounting( 9999, 1 );
-	shared_lcd_sem = xSemaphoreCreateCounting( 9999, 1 );
-	return 0;
-}
-
 void lcd_task1(void* pvParameters)
  {
 	printf("STARTING LCD");
@@ -165,10 +169,91 @@ void lcd_task1(void* pvParameters)
 
 void freq_relay(){
 	unsigned int temp = IORD(FREQUENCY_ANALYSER_BASE, 0);
-	printf("%f Hz\n", 16000/(double)temp);
+	//printf("%f Hz\n", 16000/(double)temp);
+	xQueueSendToBackFromISR( Q_freq_data, &temp, pdFALSE );
 	return;
 }
 
+void NetworkStatusTask(){
+	double freq[100], dfreq[100];
+	int i = 99, j = 0;
+
+	/* threshold test purpose */
+	double rocFreq = 7.0;
+	double lowerFreq = 48.2;
+	unsigned int false = 0;
+	while(1){
+
+		/* receive frequency data from queue */
+		while(uxQueueMessagesWaiting( Q_freq_data ) != 0)
+		{
+			xQueueReceive( Q_freq_data, freq+i, 0 );
+
+			/* calculate frequency RoC */
+
+			if(i==0)
+			{
+
+				dfreq[0] = (freq[0]-freq[99]) * 2.0 * freq[0] * freq[99] / (freq[0]+freq[99]); //a special case calculation because if you do i-1 on 0
+			}
+			else
+			{
+				dfreq[i] = (freq[i]-freq[i-1]) * 2.0 * freq[i]* freq[i-1] / (freq[i]+freq[i-1]); //normal rate of change calculation
+			}
+
+			if (dfreq[i] > 100.0)
+			{
+				dfreq[i] = 100.0; /* maximum rate of change is 100 */
+			}
+
+			/* compare arbitrary thresholds with RoC and newly calculated frequency to test end to shedQ
+			if RoC exceeds frequency value or frequency values is less than the lower bound */
+			if ((fabs(rocFreq) < dfreq[i]) || lowerFreq > freq[i]  )
+			{
+				xQueueSendToBack(shedqueue, (void*)&false, pdFALSE);
+			}
+			i =	++i%100;  /* point to the next data (oldest) to be overwritten */
+		}
+	}
+}
+
+void LoadManagerTask(){
+//xQueueReceive();
+
+	//IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE,  )
+}
+
+int main(int argc, char* argv[], char* envp[])
+{
+	alt_irq_register(FREQUENCY_ANALYSER_IRQ, 0, freq_relay);
+	initOSDataStructs();
+	initCreateTasks();
+	vTaskStartScheduler();
+	for (;;);
+	return 0;
+}
+
+/* This function simply creates a message queue and a semaphore */
+int initOSDataStructs(void)
+{
+	/* Create Queues */
+	qNewFreq = xQueueCreate( 100, sizeof( double ) );
+	qThreshold = xQueueCreate( 2, sizeof( double ) );
+	qShed = xQueueCreate( 10, sizeof( int ) );
+	qLoad = xQueueCreate( 10, sizeof( int ) );
+	qTiming = xQueueCreate( MSG_QUEUE_SIZE, sizeof( void* ) );
+	qResp = xQueueCreate( MSG_QUEUE_SIZE, sizeof( void* ) );
+
+	msgqueue = xQueueCreate( MSG_QUEUE_SIZE, sizeof( void* ) );
+	shedqueue= xQueueCreate( SHED_QUEUE_SIZE, sizeof(double));
+
+
+	/* Create Semaphores */
+	shared_resource_sem = xSemaphoreCreateCounting( 9999, 1 );
+	shared_lcd_sem = xSemaphoreCreateCounting( 9999, 1 );
+
+	return 0;
+}
 
 // This function creates the tasks used in this example
 int initCreateTasks(void)
