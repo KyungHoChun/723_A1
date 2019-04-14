@@ -52,5 +52,7 @@ Mkfile.old
 dkms.conf
 
 # Others
-.metadata/*
-.metadata/.plugins/
+.metadata/
+.metadata/.plugins/*
+723_Project/software/.metadata/.plugins/
+723_Project/software/.metadata/*

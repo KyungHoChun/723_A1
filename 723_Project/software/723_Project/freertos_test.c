@@ -43,6 +43,7 @@ TaskHandle_t xHandle;
 // Definition of Semaphore
 SemaphoreHandle_t roc_sem;
 SemaphoreHandle_t state_sem;
+SemaphoreHandle_t network_sem;
 
 /* Queue Definitions */
 xQueueHandle Q_freq_data;
@@ -52,12 +53,16 @@ xQueueHandle Q_load;
 xQueueHandle Q_timing;
 xQueueHandle Q_resp;
 
+/* Timer ISRs */
+alt_u32 firstShed_timer_isr(void* context);
+
 /* Globals variables */
 #define SAMPLING_FREQ 16000.0
 char sem_owner_task_name[20];
-static double rocThres = 20;
-static double freqThres = 49;
+static double rocThres = 20; //for test purpose - delete later
+static double freqThres = 49; //for test purpose - delete later
 int sw_result = 0x00;
+static alt_alarm firstShed_timer;
 
 void vfreq_relay(void);
 
@@ -156,6 +161,7 @@ void PRVGADraw_Task(void *pvParameters ){
 				dfreq[0] = (freq[0]-freq[99]) * 2.0 * freq[0] * freq[99] / (freq[0]+freq[99]);
 			}
 			else{
+
 				dfreq[i] = (freq[i]-freq[i-1]) * 2.0 * freq[i]* freq[i-1] / (freq[i]+freq[i-1]);
 			}
 
@@ -249,13 +255,19 @@ void vFrequencyAnalyser()
 /* Read the frequency from the*/
 void vNetworkStatusTask()
 {
+	freqValues freqValues;
+
+	//freqThres and rocThres are hardcoded at the moment - delete later
 
 	while(1)
 	{
-
+		if(xSemaphoreTake(network_sem, portMAX_DELAY)){
+			if(freqValues.newFreq < freqThres || fabs(freqValues.rocValue) > rocThres){
+			//implement timer first - first load shedding needs to happen less than 200ms
+			}
+		}
 	}
 }
-
 
 /* Switch controller */
 void vSwitchCon(void *pvParameters)
@@ -266,6 +278,7 @@ void vSwitchCon(void *pvParameters)
 		IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, sw_result);    //light red LEDs according to switch positions
 	}
 }
+
 
 /* Load manager */
 void vLoadManagerTask()
@@ -315,8 +328,9 @@ int initOSDataStructs(void)
 	Q_resp = xQueueCreate( 1, sizeof( int ) );
 
 	/* Create Semaphores */
-	roc_sem = xSemaphoreCreateCounting( 9999, 1 );
-	state_sem = xSemaphoreCreateCounting( 9999, 1 );
+	roc_sem = xSemaphoreCreateCounting(9999, 1);
+	state_sem = xSemaphoreCreateCounting(9999, 1);
+	network_sem = xSemaphoreCreateCounting(9999, 1);
 
 	return 0;
 }
