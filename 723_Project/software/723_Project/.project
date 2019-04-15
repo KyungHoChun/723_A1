@@ -3,6 +3,7 @@
 	<name>723_Project</name>
 	<comment></comment>
 	<projects>
+		<project>723_Project_bsp</project>
 	</projects>
 	<buildSpec>
 		<buildCommand>
