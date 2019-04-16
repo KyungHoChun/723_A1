@@ -7,8 +7,10 @@
 #include <stddef.h>
 #include <unistd.h> // for sleep
 #include <sys/alt_irq.h>
+#include <altera_avalon_pio_regs.h>
 
-#include "altera_avalon_pio_regs.h"
+#include "altera_avalon_uart_regs.h"
+#include "altera_avalon_uart.h"
 #include "altera_up_avalon_ps2.h"
 #include "altera_up_ps2_keyboard.h"
 #include "altera_up_avalon_video_character_buffer_with_dma.h"
@@ -32,49 +34,62 @@ typedef struct{
 }freqValues;
 
 // Definition of Task Priorities
+#define add_priority 5
 #define freq_analyser_priority 5
 #define network_status_priority 5
 #define shed_priority 5
 #define load_manager_priority 5
 #define switch_con_priority 5
-#define Timer500Reset_priority 2
-#define PRVGA_priority 1
+#define PRVGA_priority 5
+#define lcd_mode_priority 5
+#define Timer500Reset_priority (tskIDLE_PRIORITY+1)
 
 // used to delete a task
 TaskHandle_t xHandle;
 
 // Definition of Semaphore
-SemaphoreHandle_t callback_sem;
+SemaphoreHandle_t add_sem;
 SemaphoreHandle_t manager_sem;
 SemaphoreHandle_t network_sem;
-SemaphoreHandle_t reset_sem;
 SemaphoreHandle_t roc_sem;
 SemaphoreHandle_t shed_sem;
 SemaphoreHandle_t state_sem;
 SemaphoreHandle_t switch_sem;
 
+/*
+SemaphoreHandle_t callback_sem;
+SemaphoreHandle_t reset_sem;*/
+
 /* Queue Definitions */
+xQueueHandle Q_add;
 xQueueHandle Q_freq_data;
 xQueueHandle Q_freq_calc;
-xQueueHandle Q_load;
 xQueueHandle Q_resp;
 xQueueHandle Q_network_stat;
 xQueueHandle Q_threshold;
-xQueueHandle Q_timing;
+xQueueHandle Q_timer_reset;
+xQueueHandle Q_tmp;
+
+xQueueHandle Q_switch;
+xQueueHandle Q_load_stat;
 
 /* Timers*/
-//alt_u32 firstShed_timer_isr(void* context);
-//TimerHandle_t timer_200;
-TimerHandle_t timer_500;
-void vTimer500Reset_Task();
+TimerHandle_t timer500;
 void vTimer500Callback();
 
 /* Globals variables */
 typedef enum
 {
 	normal = 0,
-	maintanence = 1,
+	maintenance = 1
 } eMode;
+
+typedef struct
+{
+	unsigned int iCurrentLoad;
+	unsigned int iSheddedLoad;
+	unsigned int iUnSheddedLoad;
+} loadStat;
 
 char sem_owner_task_name[20];
 static double freqThres = 49; //for test purpose - delete later
@@ -115,11 +130,40 @@ typedef struct
 }Line;
 
 /* LCD Variables */
-xSemaphoreHandle shared_lcd_sem;
+//xSemaphoreHandle shared_lcd_sem;
 FILE *lcd;
-
 #define ESC 27
 #define CLEAR_LCD_STRING "[2J"
+
+/* shows what the current mode is through LCD Display on push button press*/
+void lcd_set_mode()
+{
+	unsigned int maintMode = 0;
+	int tmp;
+	while (1)
+	{
+		if (xQueueReceive(Q_tmp, &tmp, portMAX_DELAY) == pdTRUE)
+		{
+			maintMode = !maintMode;
+			printf("maint mode is: %d\n", maintMode);
+			lcd = fopen(CHARACTER_LCD_NAME, "w");
+			if (lcd != NULL)
+			{
+				fprintf(lcd, "%c%s", ESC, CLEAR_LCD_STRING);
+
+				if (maintMode) {
+					printf("maint mode\n");
+					fprintf (lcd, "MAINTENANCE MODE\n");
+				} else {
+					printf("normal mode\n");
+					fprintf(lcd, "NORMAL MODE\n");
+				}
+			}
+			fclose(lcd);
+		}
+		vTaskDelay(10);
+	}
+}
 
 /* VGA Display */
 void PRVGADraw_Task(void *pvParameters ){
@@ -194,7 +238,8 @@ void PRVGADraw_Task(void *pvParameters ){
 			if (((int)(freq[(i+j)%100]) > MIN_FREQ) && ((int)(freq[(i+j+1)%100]) > MIN_FREQ)){
 				//Calculate coordinates of the two data points to draw a line in between
 				//Frequency plot
-				line_freq.x1 = FREQPLT_ORI_X + FREQPLT_GRID_SIZE_X * j;
+				line_freq.x1 = FREQPLT_ORI_X
+						+ FREQPLT_GRID_SIZE_X * j;
 				line_freq.y1 = (int)(FREQPLT_ORI_Y - FREQPLT_FREQ_RES * (freq[(i+j)%100] - MIN_FREQ));
 
 				line_freq.x2 = FREQPLT_ORI_X + FREQPLT_GRID_SIZE_X * (j + 1);
@@ -217,18 +262,27 @@ void PRVGADraw_Task(void *pvParameters ){
 	}
 }
 
+/* push button mode */
+void button_mode_isr(void* context, alt_u32 id)
+{
+	volatile int* button = (volatile int*) context;
+	//cast the context
+	(*button) = IORD_ALTERA_AVALON_PIO_DATA(PUSH_BUTTON_BASE);
+
+	int btn = (int) *button;
+	printf("button number is %d\n", btn);
+
+	xQueueSendToBackFromISR(Q_tmp, &btn, pdFALSE);
+
+	// clears the edge capture register
+	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
+}
+
 /* Keyboard ISR */
 void ps2_isr(void* ps2_device, alt_u32 id){
 	unsigned char byte;
 	alt_up_ps2_read_data_byte_timeout(ps2_device, &byte);
 	xQueueSendToBackFromISR( Q_threshold, &byte, pdFALSE );
-	return;
-}
-
-/* Push button ISR */
-void push_button_irq(){
-	IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, IORD_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE));
-	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7); //write 1 to clear all detected falling edges
 	return;
 }
 
@@ -266,6 +320,7 @@ void vFrequAnalyser_Task()
 			}
 			xSemaphoreGive(roc_sem);
 		}
+		vTaskDelay(10);
 	}
 }
 
@@ -284,23 +339,21 @@ void vNetworkStatus_Task(void * pvParameters)
 				xQueueSend(Q_network_stat, 1, 0);
 			}
 			xSemaphoreGive(manager_sem);
-			/*
-			if(xSemaphoreGive(manager_sem)==pdTRUE){
-				printf("SEM SENT");
-			}*/
 		}
+		vTaskDelay(10);
 	}
 }
 
 /* Switch controller */
 void vSwitchCon_Task(void *pvParameters)
 {
+	unsigned int iCurrentLoad;
 	while(1){
 		xSemaphoreTake(switch_sem, pdFALSE);
-		unsigned int iSwitchRes = IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE) & 0x00FF; //read slide switches
-		xQueueOverwrite(Q_load, iSwitchRes);
-		printf("SWITCH READ");
+		iCurrentLoad = IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE) & 0x1F; //read slide switches
+		xQueueSend(Q_switch, &iCurrentLoad, portMAX_DELAY);
 		xSemaphoreGive(manager_sem);
+		vTaskDelay(10);
 	}
 }
 
@@ -309,98 +362,139 @@ void vSwitchCon_Task(void *pvParameters)
 void vLoadManager_Task(void * pvParameters)
 {
 	int stability;
-	unsigned int iSwitchRes;
-	unsigned int uiSheddedLed = 00;
-	unsigned int uiClearLED = 0x00;
+	unsigned int iCurrentLoad;
+	loadStat loadStat;
+	loadStat.iSheddedLoad = 0x00;
+	loadStat.iUnSheddedLoad = 0x00;
 
 	while(1)
 	{
 		if(xSemaphoreTake(manager_sem, portMAX_DELAY))
 		{
-			if(uxQueueMessagesWaiting(Q_network_stat)!=0 && iMode == normal){
-				xQueueReceive(Q_network_stat, &stability, 0);
-				//printf("unstable");
-				//START TIMER
-				//SHED LOAD
-
+			xQueueReceive(Q_switch, &iCurrentLoad, 0);
+			loadStat.iCurrentLoad = iCurrentLoad;
+			if(uxQueueMessagesWaiting(Q_network_stat) != 0 && iMode == normal){
+				if(xQueueReceive(Q_network_stat, &stability, 0) == pdTRUE){
+					printf("iCurrentLoad is: %d\n ", loadStat.iCurrentLoad);
+					printf("iSheddedLoad is: %d\n ", loadStat.iSheddedLoad);
+					printf("iUnSheddedLoad is: %d\n ", loadStat.iUnSheddedLoad);
+					//printf("unstable\n");
+					//START TIMER
+					//xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
+					//printf("unstable1\n");
+					//xSemaphoreGive(shed_sem);
+					//printf("unstable2\n");
+				}
 			}
-			xSemaphoreGive(switch_sem);
-			/*
-			xQueueReceive(Q_shed, &stability, 0);
-			if(iMode == normal){
-				printf("stability: %d\n",stability);
-				//vNormalMode();
-				// if all loads connected, exit load managing.
-			}
-			else
-			{
-				// Maintenance mode
-				xQueueReceive(Q_load, &iSwitchRes, 0);
-				IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, iSwitchRes);
-				IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, uiClearLED);
-			}*/
 
+//			xSemaphoreGive(switch_sem);
+//
+			//xQueueReceive(Q_load, &iSwitchRes, portMAX_DELAY);
+			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, loadStat.iSheddedLoad);
+			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, loadStat.iUnSheddedLoad);
 		}
+		vTaskDelay(15);
 	}
 }
 
 /* Shedding load task */
 void vShed_Task(void *pvParameters)
 {
-	unsigned int iSwitchRes;
-	int iSheddedLoad[8];
-	unsigned int iLoadChange;
-	int shedFlag = 0;
-	int stable = 1;
+	loadStat loadStat;
 
-	// Start 200ms
-	// has not shed a load
 	while(1)
 	{
-		if(shedFlag == 0)
+		printf("IN SHED");
+		if(xSemaphoreTake(shed_sem, portMAX_DELAY))
 		{
-			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, 0x00);
-			iSwitchRes = IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE) & 0x00FF; //read slide switches
-			iLoadChange = iSwitchRes & iSheddedLoad;
-			switch(iLoadChange){
-				case ((iLoadChange)==1):
+			xQueueReceive(Q_load_stat,  (void *) &loadStat, portMAX_DELAY);
 
+			if((loadStat.iCurrentLoad & 0x01) == 0x01){
+				loadStat.iSheddedLoad |= 01;
+				loadStat.iUnSheddedLoad &= ~01;
 			}
-			// look at switch configuration
-			// save slide configuration
-			// shed load with lowest prio
-			// switch off red led and turn on green led
-			// start 500ms timer
-			// Timer500_Reset();
+			else if((loadStat.iCurrentLoad & 0x02) == 0x02){
+				loadStat.iSheddedLoad |= 0x02;
+				loadStat.iUnSheddedLoad &= ~0x02;
+			}
+			else if((loadStat.iCurrentLoad & 0x04) == 0x04){
+				loadStat.iSheddedLoad |= 0x04;
+				loadStat.iUnSheddedLoad &= ~0x04;
+			}
+			else if((loadStat.iCurrentLoad & 0x08) == 0x08){
+				loadStat.iSheddedLoad |= 0x08;
+				loadStat.iUnSheddedLoad &= ~0x08;
+			}
+			else if((loadStat.iCurrentLoad & 0x16) == 0x16){
+				loadStat.iSheddedLoad |= 0x16;
+				loadStat.iUnSheddedLoad &= ~0x16;
+			}
+			xQueueSend(Q_load_stat, (void*)&loadStat, portMAX_DELAY);
+			xSemaphoreGive(manager_sem);
 		}
-		else
-		{
-			// look at previous slide configuration
-			// shed next lowest prio load
-			// switch off red led and turn on green led
-			// start 500ms timer
-			// Timer500_Reset();
-		}
+		vTaskDelay(10);
 	}
 	return;
 }
 
-/* Timer functions */
-void vTimer500Reset_Task(){
-	xSemaphoreTake(reset_sem, 10);
-	Timer_500_flag = 0;
-	xSemaphoreGive(reset_sem);
+void vAdd_Task(void *pvParameters)
+{
 
-	xTimerReset(timer_500, 10);
+	loadStat loadStat;
+
+	while(1)
+	{
+		printf("IN ADD");
+		if(xSemaphoreTake(add_sem, portMAX_DELAY))
+		{
+			xQueueReceive(Q_load_stat,  (void *) &loadStat, portMAX_DELAY);
+
+			if((loadStat.iCurrentLoad & 0x16) == 0x16){
+				loadStat.iSheddedLoad &= ~0x16;
+				loadStat.iUnSheddedLoad |= 0x16;
+			}
+			else if((loadStat.iCurrentLoad & 0x08) == 0x08){
+				loadStat.iSheddedLoad |= 0x08;
+				loadStat.iUnSheddedLoad &= ~0x08;
+			}
+			else if((loadStat.iCurrentLoad & 0x04) == 0x04){
+				loadStat.iSheddedLoad |= 0x04;
+				loadStat.iUnSheddedLoad &= ~0x04;
+			}
+			else if((loadStat.iCurrentLoad & 0x02) == 0x02){
+				loadStat.iSheddedLoad |= 0x02;
+				loadStat.iUnSheddedLoad &= ~0x02;
+			}
+			else if((loadStat.iCurrentLoad & 0x01) == 0x01){
+				loadStat.iSheddedLoad |= 0x01;
+				loadStat.iUnSheddedLoad &= ~0x01;
+			}
+			xQueueSend(Q_load_stat, (void*)&loadStat, portMAX_DELAY);
+			xSemaphoreGive(manager_sem);
+		}
+		vTaskDelay(10);
+	}
 	return;
 }
 
-/* Timer callback */
-void vTimer500Callback(xTimerHandle t_timer){
-	xSemaphoreTake(callback_sem, 10);
-	Timer_500_flag = 1;
-	xSemaphoreGive(callback_sem);
+void vTimer500Reset_Task(void *pvParameters){
+	int reset;
+	while(1){
+		if(uxQueueMessagesWaiting(Q_timer_reset)){
+			if(xQueueReceive(Q_timer_reset, &reset, 0) == pdTRUE){
+				xTimerReset(timer500,0);
+			}
+		}
+		vTaskDelay(10);
+	}
 	return;
+}
+
+/* Timer functions*/
+void vTimer500_Callback(xTimerHandle t_timer500)
+{
+	printf("--\n");
+	IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0x1F^IORD_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE));
 }
 
 void main(int argc, char* argv[], char* envp[])
@@ -418,17 +512,27 @@ void main(int argc, char* argv[], char* envp[])
 	alt_irq_register(PS2_IRQ, ps2_device, ps2_isr);
 
 	/* Push button setup */
-	IOWR_ALTERA_AVALON_PIO_IRQ_MASK(PUSH_BUTTON_BASE, 0x7); //enable interrupt for all three push buttons (Keys 1-3 -> bits 0-2)
-	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7); //write 1 to edge capture to clear pending interrupts
-	alt_irq_register(PUSH_BUTTON_IRQ, 0, push_button_irq);  //register ISR for push button interrupt request
+	int buttonValue = 0;
+	/* clears the edge capture register. Writing 1 to bit clears pending interrupt for corresponding button.*/
+	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x07);
+
+	/* Enable interrupts for key1 */
+	IOWR_ALTERA_AVALON_PIO_IRQ_MASK(PUSH_BUTTON_BASE, 0x01);
+
+	/* Register the ISR */
+	alt_irq_register(PUSH_BUTTON_IRQ,(void*)&buttonValue, button_mode_isr);
+
+	/* Create Timers */
+//	IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0x1F);
+//	timer500 = xTimerCreate("Timer500", 1000, pdTRUE, NULL, vTimer500_Callback);
+//
+//	if(xTimerStart(timer500,0) != pdPASS){
+//		printf("Cannot start timer");
+//	}
 
 	initOSDataStructs();
 	initCreateTasks();
 	vTaskStartScheduler();
-
-	/* Create Timers */
-	timer_500 = xTimerCreate("500_timer", 500, pdTRUE, NULL, vTimer500Callback);
-	xTimerStop(timer_500,10);
 
 	for(;;);
 	return;
@@ -438,35 +542,43 @@ void main(int argc, char* argv[], char* envp[])
 void initOSDataStructs(void)
 {
 	/* Create Semaphores */
-	callback_sem = xSemaphoreCreateBinary();
+	add_sem = xSemaphoreCreateBinary();
 	manager_sem = xSemaphoreCreateBinary();
 	network_sem = xSemaphoreCreateBinary();
-	reset_sem = xSemaphoreCreateBinary();
 	roc_sem = xSemaphoreCreateBinary();
 	state_sem = xSemaphoreCreateBinary();
 	switch_sem = xSemaphoreCreateBinary();
+
+	//callback_sem = xSemaphoreCreateBinary();
+	//reset_sem = xSemaphoreCreateBinary()
 
 	/* Create Queues */
 	Q_freq_data = xQueueCreate( 100, sizeof( double ) );
 	Q_freq_calc = xQueueCreate( 100, sizeof( freqValues ) );
 	Q_threshold = xQueueCreate( 2, sizeof( double ) );
 	Q_network_stat = xQueueCreate( 10, sizeof( int ) );
-	Q_load = xQueueCreate( 10, sizeof( int ) );
-	Q_timing = xQueueCreate( 4, sizeof( int ) );
+	Q_load_stat = xQueueCreate( 10, sizeof( loadStat ) );
+	Q_switch = xQueueCreate( 10, sizeof( int ) );
 	Q_resp = xQueueCreate( 1, sizeof( int ) );
+	Q_tmp = xQueueCreate(100, sizeof(int));
+
+	Q_timer_reset = xQueueCreate( 4, sizeof( int ) );
 
 	return;
 }
+
 // This function creates the tasks used in this example
 void initCreateTasks(void)
 {
+	//xTaskCreate( vAdd_Task, "AddTask", configMINIMAL_STACK_SIZE, NULL, add_priority, NULL );
 	xTaskCreate( vFrequAnalyser_Task, "FreqAnalyserTask", configMINIMAL_STACK_SIZE, NULL, freq_analyser_priority, NULL );
 	xTaskCreate( vNetworkStatus_Task, "NetworkStatusTask", configMINIMAL_STACK_SIZE, NULL, network_status_priority, NULL );
-	xTaskCreate( vShed_Task, "ShedTask", configMINIMAL_STACK_SIZE, NULL, shed_priority, NULL );
+	//xTaskCreate( vShed_Task, "ShedTask", configMINIMAL_STACK_SIZE, NULL, shed_priority, NULL );
 	xTaskCreate( vLoadManager_Task, "LoadManagerTask", configMINIMAL_STACK_SIZE, NULL, load_manager_priority, NULL );
 	xTaskCreate( vSwitchCon_Task, "SwitchCon", configMINIMAL_STACK_SIZE, NULL, switch_con_priority, NULL );
 	xTaskCreate( vTimer500Reset_Task, "Timer500Reset", configMINIMAL_STACK_SIZE, NULL, Timer500Reset_priority, NULL );
-	xTaskCreate( PRVGADraw_Task, "PRVGADraw", configMINIMAL_STACK_SIZE, NULL, PRVGA_priority, NULL );
+	// xTaskCreate( PRVGADraw_Task, "PRVGADraw", configMINIMAL_STACK_SIZE, NULL, PRVGA_priority, NULL );
+	xTaskCreate (lcd_set_mode, "lcd_mode", configMINIMAL_STACK_SIZE, NULL, lcd_mode_priority, NULL );
 
 	return;
 }
