@@ -375,14 +375,11 @@ void vLoadManager_Task(void * pvParameters)
 			loadStat.iCurrentLoad = iCurrentLoad;
 			if(uxQueueMessagesWaiting(Q_network_stat) != 0 && iMode == normal){
 				if(xQueueReceive(Q_network_stat, &stability, 0) == pdTRUE){
-					printf("iCurrentLoad is: %d\n ", loadStat.iCurrentLoad);
-					printf("iSheddedLoad is: %d\n ", loadStat.iSheddedLoad);
-					printf("iUnSheddedLoad is: %d\n ", loadStat.iUnSheddedLoad);
-					//printf("unstable\n");
+					printf("unstable\n");
 					//START TIMER
-					//xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
-					//printf("unstable1\n");
-					//xSemaphoreGive(shed_sem);
+					if(uxQueueMessagesWaiting(Q_load_stat)==0){
+						xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
+					}
 					//printf("unstable2\n");
 				}
 			}
@@ -404,10 +401,11 @@ void vShed_Task(void *pvParameters)
 
 	while(1)
 	{
-		printf("IN SHED");
-		if(xSemaphoreTake(shed_sem, portMAX_DELAY))
-		{
+		if(uxQueueMessagesWaiting(Q_load_stat) != 0 && iMode == normal){
+			printf("---uxQueueMessagesWaiting is: %d\n ", uxQueueMessagesWaiting(Q_load_stat));
 			xQueueReceive(Q_load_stat,  (void *) &loadStat, portMAX_DELAY);
+			printf("---uxQueueMessagesWaiting is: %d\n ", uxQueueMessagesWaiting(Q_load_stat));
+			//printf("---iCurrentLoad is: %d\n ", loadStat.iCurrentLoad);
 
 			if((loadStat.iCurrentLoad & 0x01) == 0x01){
 				loadStat.iSheddedLoad |= 01;
@@ -439,7 +437,6 @@ void vShed_Task(void *pvParameters)
 
 void vAdd_Task(void *pvParameters)
 {
-
 	loadStat loadStat;
 
 	while(1)
@@ -542,7 +539,7 @@ void main(int argc, char* argv[], char* envp[])
 void initOSDataStructs(void)
 {
 	/* Create Semaphores */
-	add_sem = xSemaphoreCreateBinary();
+	shed_sem = xSemaphoreCreateBinary();
 	manager_sem = xSemaphoreCreateBinary();
 	network_sem = xSemaphoreCreateBinary();
 	roc_sem = xSemaphoreCreateBinary();
@@ -557,8 +554,8 @@ void initOSDataStructs(void)
 	Q_freq_calc = xQueueCreate( 100, sizeof( freqValues ) );
 	Q_threshold = xQueueCreate( 2, sizeof( double ) );
 	Q_network_stat = xQueueCreate( 10, sizeof( int ) );
-	Q_load_stat = xQueueCreate( 10, sizeof( loadStat ) );
-	Q_switch = xQueueCreate( 10, sizeof( int ) );
+	Q_load_stat = xQueueCreate( 1, sizeof( loadStat ) );
+	Q_switch = xQueueCreate( 10, sizeof( unsigned int ) );
 	Q_resp = xQueueCreate( 1, sizeof( int ) );
 	Q_tmp = xQueueCreate(100, sizeof(int));
 
@@ -573,7 +570,7 @@ void initCreateTasks(void)
 	//xTaskCreate( vAdd_Task, "AddTask", configMINIMAL_STACK_SIZE, NULL, add_priority, NULL );
 	xTaskCreate( vFrequAnalyser_Task, "FreqAnalyserTask", configMINIMAL_STACK_SIZE, NULL, freq_analyser_priority, NULL );
 	xTaskCreate( vNetworkStatus_Task, "NetworkStatusTask", configMINIMAL_STACK_SIZE, NULL, network_status_priority, NULL );
-	//xTaskCreate( vShed_Task, "ShedTask", configMINIMAL_STACK_SIZE, NULL, shed_priority, NULL );
+	xTaskCreate( vShed_Task, "ShedTask", configMINIMAL_STACK_SIZE, NULL, shed_priority, NULL );
 	xTaskCreate( vLoadManager_Task, "LoadManagerTask", configMINIMAL_STACK_SIZE, NULL, load_manager_priority, NULL );
 	xTaskCreate( vSwitchCon_Task, "SwitchCon", configMINIMAL_STACK_SIZE, NULL, switch_con_priority, NULL );
 	xTaskCreate( vTimer500Reset_Task, "Timer500Reset", configMINIMAL_STACK_SIZE, NULL, Timer500Reset_priority, NULL );
