@@ -1,11 +1,51 @@
-22:38:13 **** Incremental Build of configuration Nios II for project 723_Project ****
+22:08:00 **** Incremental Build of configuration Nios II for project 723_Project ****
 make all 
 makefile:767: warning: overriding commands for target `obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o'
 makefile:764: warning: ignoring old commands for target `obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o'
 Info: Building ../723_Project_bsp/
 C:/intelFPGA/16.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../723_Project_bsp/
 [BSP build complete]
+Info: Compiling freertos_test.c to obj/default/freertos_test.o
+nios2-elf-gcc -xc -MP -MMD -c -I../723_Project_bsp//HAL/inc -I../723_Project_bsp/ -I../723_Project_bsp//drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mhw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/freertos_test.o freertos_test.c
+freertos_test.c: In function 'PRVGADraw_Task':
+freertos_test.c:242:6: warning: operation on 'i' may be undefined [-Wsequence-point]
+    i = (++i) % 100; //point to the next data (oldest) to be overwritten
+      ^
+In file included from freertos_test.c:22:0:
+freertos_test.c: In function 'vNetworkStatus_Task':
+FreeRTOS/queue.h:421:90: warning: passing argument 2 of 'xQueueGenericSend' makes pointer from integer without a cast [-Wint-conversion]
+ #define xQueueSend( xQueue, pvItemToQueue, xTicksToWait ) xQueueGenericSend( ( xQueue ), ( pvItemToQueue ), ( xTicksToWait ), queueSEND_TO_BACK )
+                                                                                          ^
+freertos_test.c:356:5: note: in expansion of macro 'xQueueSend'
+     xQueueSend(Q_network_stat, 1, 0);
+     ^
+FreeRTOS/queue.h:592:12: note: expected 'const void * const' but argument is of type 'int'
+ BaseType_t xQueueGenericSend( QueueHandle_t xQueue, const void * const pvItemToQueue, TickType_t xTicksToWait, const BaseType_t xCopyPosition ) PRIVILEGED_FUNCTION;
+            ^
+freertos_test.c:344:6: warning: unused variable 'networkFlag' [-Wunused-variable]
+  int networkFlag = 0;
+      ^
+freertos_test.c: At top level:
+freertos_test.c:633:6: warning: return type of 'main' is not 'int' [-Wmain]
+ void main(int argc, char* argv[], char* envp[])
+      ^
+freertos_test.c: In function 'main':
+freertos_test.c:636:46: warning: passing argument 3 of 'alt_irq_register' from incompatible pointer type [-Wincompatible-pointer-types]
+  alt_irq_register(FREQUENCY_ANALYSER_IRQ, 0, vfreq_relay);
+                                              ^
+In file included from ../723_Project_bsp//HAL/inc/sys/alt_irq.h:218:0,
+                 from freertos_test.c:9:
+../723_Project_bsp//HAL/inc/priv/alt_legacy_irq.h:61:12: note: expected 'alt_isr_func {aka void (*)(void *, long unsigned int)}' but argument is of type 'void (*)(void)'
+ extern int alt_irq_register (alt_u32 id, 
+            ^
+Info: Linking 723_Project.elf
+nios2-elf-g++  -T'../723_Project_bsp//linker.x' -msys-crt0='../723_Project_bsp//obj/HAL/src/crt0.o' -msys-lib=hal_bsp -L../723_Project_bsp/   -Wl,-Map=723_Project.map   -O0 -g -Wall   -mhw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o 723_Project.elf obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o obj/default/FreeRTOS/croutine.o obj/default/FreeRTOS/event_groups.o obj/default/FreeRTOS/heap.o obj/default/FreeRTOS/list.o obj/default/FreeRTOS/port.o obj/default/FreeRTOS/queue.o obj/default/FreeRTOS/tasks.o obj/default/FreeRTOS/timers.o obj/default/freertos_test.o obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o obj/default/FreeRTOS/port_asm.o -lm -msys-lib=m
+nios2-elf-insert 723_Project.elf --thread_model hal --cpu_name nios2 --qsys true --simulation_enabled false --id 7 --sidp 0x430f0 --timestamp 1393900972 --stderr_dev jtag_uart --stdin_dev jtag_uart --stdout_dev jtag_uart --sopc_system_name nios2 --quartus_project_dir "D:/723_A1/723_Project" --sopcinfo D:/723_A1/723_Project/software/723_Project_bsp/../../nios2.sopcinfo
+Info: (723_Project.elf) 622 KBytes program size (code + initialized data).
+Info:                   130560 KBytes free for stack + heap.
+Info: Creating 723_Project.objdump
+nios2-elf-objdump --disassemble --syms --all-header --source 723_Project.elf >723_Project.objdump
 [723_Project build complete]
 
-22:38:15 Build Finished (took 1s.265ms)
+22:08:03 Build Finished (took 3s.669ms)
 

@@ -72,6 +72,9 @@ xQueueHandle Q_tmp;
 
 xQueueHandle Q_switch;
 xQueueHandle Q_load_stat;
+xQueueHandle Q_ms_load_stat;
+xQueueHandle Q_ma_load_stat;
+xQueueHandle Q_a_load_stat;
 
 /* Timers*/
 TimerHandle_t timer500;
@@ -90,6 +93,16 @@ typedef struct
 	unsigned int iSheddedLoad;
 	unsigned int iUnSheddedLoad;
 } loadStat;
+
+typedef struct
+{
+	unsigned int iSheddedLoad;
+	unsigned int iUnSheddedLoad;
+} handledLoadStat;
+
+int timer_flag = 0;
+int timer_fin = 0;
+int stable_network = 1;
 
 char sem_owner_task_name[20];
 static double freqThres = 49; //for test purpose - delete later
@@ -328,6 +341,7 @@ void vFrequAnalyser_Task()
 void vNetworkStatus_Task(void * pvParameters)
 {
 	freqValues freqValues;
+	int stable = 1;
 
 	while(1)
 	{
@@ -336,7 +350,12 @@ void vNetworkStatus_Task(void * pvParameters)
 			xQueueReceive(Q_freq_calc, (void *) &freqValues, 0);
 			if(freqValues.newFreq < freqThres || fabs(freqValues.rocValue) > rocThres)
 			{
-				xQueueSend(Q_network_stat, 1, 0);
+				stable = 0;
+				xQueueSend(Q_network_stat, &stable, 0);
+			}
+			else{
+				stable = 1;
+				xQueueSend(Q_network_stat, &stable, 0);
 			}
 			xSemaphoreGive(manager_sem);
 		}
@@ -363,9 +382,15 @@ void vLoadManager_Task(void * pvParameters)
 {
 	int stability;
 	unsigned int iCurrentLoad;
+
 	loadStat loadStat;
+	handledLoadStat handledLoadStat;
+
 	loadStat.iSheddedLoad = 0x00;
 	loadStat.iUnSheddedLoad = 0x00;
+
+	int shed_flag = 0;
+	int add_flag = 0;
 
 	while(1)
 	{
@@ -373,61 +398,162 @@ void vLoadManager_Task(void * pvParameters)
 		{
 			xQueueReceive(Q_switch, &iCurrentLoad, 0);
 			loadStat.iCurrentLoad = iCurrentLoad;
-			if(uxQueueMessagesWaiting(Q_network_stat) != 0 && iMode == normal){
-				if(xQueueReceive(Q_network_stat, &stability, 0) == pdTRUE){
-					printf("unstable\n");
-					//START TIMER
-					if(uxQueueMessagesWaiting(Q_load_stat)==0){
+
+			// SHED TASK
+			if(xQueueReceive(Q_network_stat, &stability, 0) == pdTRUE){
+				// if timer is not active and unstable - start timer - shed load
+				if(stability == 0 && !timer_flag && !timer_fin){
+				// If network is unstable and there hasn't been a shedded load
+					if(uxQueueMessagesWaiting(Q_load_stat) == 0){
+						printf("A\n");
+						xTimerStart(timer500,0);
+						timer_flag = 1;
+						shed_flag = 1;
 						xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
 					}
-					//printf("unstable2\n");
+				}
+				// if timer is active (from stable) and has become unstable - reset timer - shed load
+				else if(stability == 0 && timer_flag && !timer_fin){
+					if(uxQueueMessagesWaiting(Q_load_stat) == 0){
+						printf("B\n");
+						xTimerStart(timer500,0);
+						shed_flag = 1;
+						xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
+					}
+				}
+				// if timer has finished and unstable - reset timer - shed load
+				else if(stability == 0 && !timer_flag && timer_fin){
+					timer_fin = 0;
+					timer_flag = 0;
+					if(uxQueueMessagesWaiting(Q_load_stat) == 0){
+						printf("C\n");
+						xTimerStart(timer500,0);
+						shed_flag = 1;
+						xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
+					}
+				}
+				// If timer is not active and stable - do nothing, red led = switches
+				if(stability == 1 && !timer_flag && !timer_fin){
+					// do nothing
+					// red led = switches
+					printf("E\n");
+				}
+				// If timer has finished (from unstable) and has become stable - reset timer
+				else if(stability == 1 && timer_flag && timer_fin){
+					timer_fin = 0;
+					xTimerStart(timer500,0);
+					printf("add - iSheddedLoad: %d",loadStat.iSheddedLoad);
+					if(loadStat.iSheddedLoad > 0 && uxQueueMessagesWaiting(Q_a_load_stat) == 0){
+						// if a load was shed - add load
+						printf("F\n");
+						add_flag = 1;
+						xQueueSend(Q_a_load_stat, &loadStat, portMAX_DELAY);
+					}
+					else if(loadStat.iSheddedLoad == 0){
+						printf("G\n");
+						// if no loads were shed - do nothing
+					}
 				}
 			}
+			else if(xQueueReceive(Q_ms_load_stat, &handledLoadStat, 0) == pdTRUE && shed_flag){
+				// RECIEVE SHEDDED CONFIG
+				printf("D\n");
+				shed_flag = 0;
+				loadStat.iSheddedLoad = handledLoadStat.iSheddedLoad;
+				loadStat.iUnSheddedLoad = handledLoadStat.iUnSheddedLoad;
+			}
+			else if(xQueueReceive(Q_ma_load_stat, &handledLoadStat, 0) == pdTRUE && add_flag){
+				// RECEIVE ADDED CONFIG
+				printf("H\n");
+				add_flag = 0;
+				loadStat.iSheddedLoad = handledLoadStat.iSheddedLoad;
+				loadStat.iUnSheddedLoad = handledLoadStat.iUnSheddedLoad;
+			}
+
+			/*
+			//ADD TASK
+			if(xQueueReceive(Q_network_stat, &stability, 0) == pdTRUE){
+				// If timer is not active and stable - do nothing, red led = switches
+				if(stability == 1 && !timer_flag && !timer_fin){
+					// do nothing
+					// red led = switches
+					printf("E\n");
+				}
+				// If timer has finished (from unstable) and has become stable - reset timer
+				else if(stability == 1 && timer_flag && timer_fin){
+					timer_fin = 0;
+					xTimerStart(timer500,0);
+					printf("add - iSheddedLoad: %d",loadStat.iSheddedLoad);
+					if(loadStat.iSheddedLoad > 0 && uxQueueMessagesWaiting(Q_a_load_stat) == 0){
+						// if a load was shed - add load
+						printf("F\n");
+						add_flag = 1;
+						xQueueSend(Q_a_load_stat, &loadStat, portMAX_DELAY);
+					}
+					else if(loadStat.iSheddedLoad == 0){
+						printf("G\n");
+						// if no loads were shed - do nothing
+					}
+				}
+			}
+			else if(xQueueReceive(Q_ma_load_stat, &handledLoadStat, 0) == pdTRUE && add_flag == 1){
+				// RECEIVE ADDED CONFIG
+				printf("H\n");
+				add_flag = 0;
+				loadStat.iSheddedLoad = handledLoadStat.iSheddedLoad;
+				loadStat.iUnSheddedLoad = handledLoadStat.iUnSheddedLoad;
+			}*/
 
 //			xSemaphoreGive(switch_sem);
-//
-			//xQueueReceive(Q_load, &iSwitchRes, portMAX_DELAY);
-			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, loadStat.iSheddedLoad);
-			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, loadStat.iUnSheddedLoad);
+			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, handledLoadStat.iSheddedLoad & 0x1F);
+			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, handledLoadStat.iUnSheddedLoad & 0x1F);
 		}
 		vTaskDelay(15);
 	}
 }
 
+// shed load - start timer
+// if network becomes stable before timer has finished reset timer.
+// at end of timer check network stat.
+// if unstable - shed load - reset timer
+
+
 /* Shedding load task */
 void vShed_Task(void *pvParameters)
 {
 	loadStat loadStat;
+	handledLoadStat handledLoadStat;
 
 	while(1)
 	{
 		if(uxQueueMessagesWaiting(Q_load_stat) != 0 && iMode == normal){
-			printf("---uxQueueMessagesWaiting is: %d\n ", uxQueueMessagesWaiting(Q_load_stat));
 			xQueueReceive(Q_load_stat,  (void *) &loadStat, portMAX_DELAY);
-			printf("---uxQueueMessagesWaiting is: %d\n ", uxQueueMessagesWaiting(Q_load_stat));
-			//printf("---iCurrentLoad is: %d\n ", loadStat.iCurrentLoad);
 
-			if((loadStat.iCurrentLoad & 0x01) == 0x01){
-				loadStat.iSheddedLoad |= 01;
+			if((loadStat.iCurrentLoad & 0x01) == 0x01 && (loadStat.iSheddedLoad & 0x01) != 0x01){
+				loadStat.iSheddedLoad |= 0x01;
 				loadStat.iUnSheddedLoad &= ~01;
 			}
-			else if((loadStat.iCurrentLoad & 0x02) == 0x02){
+			else if((loadStat.iCurrentLoad & 0x02) == 0x02 && (loadStat.iSheddedLoad & 0x02) != 0x02){
 				loadStat.iSheddedLoad |= 0x02;
 				loadStat.iUnSheddedLoad &= ~0x02;
 			}
-			else if((loadStat.iCurrentLoad & 0x04) == 0x04){
+			else if((loadStat.iCurrentLoad & 0x04) == 0x04 && (loadStat.iSheddedLoad & 0x04) != 0x04){
 				loadStat.iSheddedLoad |= 0x04;
 				loadStat.iUnSheddedLoad &= ~0x04;
 			}
-			else if((loadStat.iCurrentLoad & 0x08) == 0x08){
+			else if((loadStat.iCurrentLoad & 0x08) == 0x08 && (loadStat.iSheddedLoad & 0x08) != 0x08){
 				loadStat.iSheddedLoad |= 0x08;
 				loadStat.iUnSheddedLoad &= ~0x08;
 			}
-			else if((loadStat.iCurrentLoad & 0x16) == 0x16){
+			else if((loadStat.iCurrentLoad & 0x16) == 0x16 && (loadStat.iSheddedLoad & 0x16) != 0x16){
 				loadStat.iSheddedLoad |= 0x16;
 				loadStat.iUnSheddedLoad &= ~0x16;
 			}
-			xQueueSend(Q_load_stat, (void*)&loadStat, portMAX_DELAY);
+
+			handledLoadStat.iSheddedLoad = loadStat.iSheddedLoad;
+			handledLoadStat.iUnSheddedLoad = loadStat.iUnSheddedLoad;
+
+			xQueueSend(Q_ms_load_stat, (void*)&handledLoadStat, portMAX_DELAY);
 			xSemaphoreGive(manager_sem);
 		}
 		vTaskDelay(10);
@@ -438,35 +564,43 @@ void vShed_Task(void *pvParameters)
 void vAdd_Task(void *pvParameters)
 {
 	loadStat loadStat;
+	handledLoadStat handledLoadStat;
 
 	while(1)
 	{
-		printf("IN ADD");
-		if(xSemaphoreTake(add_sem, portMAX_DELAY))
-		{
-			xQueueReceive(Q_load_stat,  (void *) &loadStat, portMAX_DELAY);
+		if(uxQueueMessagesWaiting(Q_a_load_stat) != 0 && iMode == normal){
+			xQueueReceive(Q_a_load_stat,  (void *) &loadStat, portMAX_DELAY);
+			printf("b Add iSheddedLoad: %d\n",handledLoadStat.iSheddedLoad);
+			printf("b Add iUnSheddedLoad: %d\n",handledLoadStat.iUnSheddedLoad);
 
-			if((loadStat.iCurrentLoad & 0x16) == 0x16){
+			if((loadStat.iCurrentLoad & 0x16) == 0x16 && (loadStat.iSheddedLoad & 0x16) == 0x16){
 				loadStat.iSheddedLoad &= ~0x16;
-				loadStat.iUnSheddedLoad |= 0x16;
+				loadStat.iUnSheddedLoad &= 0x16;
 			}
-			else if((loadStat.iCurrentLoad & 0x08) == 0x08){
-				loadStat.iSheddedLoad |= 0x08;
-				loadStat.iUnSheddedLoad &= ~0x08;
+			else if((loadStat.iCurrentLoad & 0x08) == 0x08 && (loadStat.iSheddedLoad & 0x08) == 0x08){
+				loadStat.iSheddedLoad &= ~0x08;
+				loadStat.iUnSheddedLoad &= 0x08;
 			}
-			else if((loadStat.iCurrentLoad & 0x04) == 0x04){
-				loadStat.iSheddedLoad |= 0x04;
-				loadStat.iUnSheddedLoad &= ~0x04;
+			else if((loadStat.iCurrentLoad & 0x04) == 0x04 && (loadStat.iSheddedLoad & 0x04) == 0x04){
+				loadStat.iSheddedLoad &= ~0x04;
+				loadStat.iUnSheddedLoad &= 0x04;
 			}
-			else if((loadStat.iCurrentLoad & 0x02) == 0x02){
-				loadStat.iSheddedLoad |= 0x02;
-				loadStat.iUnSheddedLoad &= ~0x02;
+			else if((loadStat.iCurrentLoad & 0x02) == 0x02 && (loadStat.iSheddedLoad & 0x02) == 0x02){
+				loadStat.iSheddedLoad &= ~0x02;
+				loadStat.iUnSheddedLoad &= 0x02;
 			}
-			else if((loadStat.iCurrentLoad & 0x01) == 0x01){
-				loadStat.iSheddedLoad |= 0x01;
-				loadStat.iUnSheddedLoad &= ~0x01;
+			else if((loadStat.iCurrentLoad & 0x01) == 0x01 && (loadStat.iSheddedLoad & 0x01) == 0x01){
+				loadStat.iSheddedLoad &= ~0x01;
+				loadStat.iUnSheddedLoad &= 0x01;
 			}
-			xQueueSend(Q_load_stat, (void*)&loadStat, portMAX_DELAY);
+
+			handledLoadStat.iSheddedLoad = loadStat.iSheddedLoad;
+			handledLoadStat.iUnSheddedLoad = loadStat.iUnSheddedLoad;
+
+			printf("Add iSheddedLoad: %d\n",handledLoadStat.iSheddedLoad);
+			printf("Add iUnSheddedLoad: %d\n",handledLoadStat.iUnSheddedLoad);
+
+			xQueueSend(Q_ma_load_stat, (void*)&handledLoadStat, portMAX_DELAY);
 			xSemaphoreGive(manager_sem);
 		}
 		vTaskDelay(10);
@@ -490,8 +624,11 @@ void vTimer500Reset_Task(void *pvParameters){
 /* Timer functions*/
 void vTimer500_Callback(xTimerHandle t_timer500)
 {
-	printf("--\n");
-	IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0x1F^IORD_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE));
+	printf("--------------------------\n");
+	timer_flag = 0;
+	timer_fin = 1;
+
+	return;
 }
 
 void main(int argc, char* argv[], char* envp[])
@@ -521,7 +658,7 @@ void main(int argc, char* argv[], char* envp[])
 
 	/* Create Timers */
 //	IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0x1F);
-//	timer500 = xTimerCreate("Timer500", 1000, pdTRUE, NULL, vTimer500_Callback);
+	timer500 = xTimerCreate("Timer500", 500, pdTRUE, NULL, vTimer500_Callback);
 //
 //	if(xTimerStart(timer500,0) != pdPASS){
 //		printf("Cannot start timer");
@@ -552,9 +689,13 @@ void initOSDataStructs(void)
 	/* Create Queues */
 	Q_freq_data = xQueueCreate( 100, sizeof( double ) );
 	Q_freq_calc = xQueueCreate( 100, sizeof( freqValues ) );
+	Q_load_stat = xQueueCreate( 1, sizeof( loadStat ) );
+	Q_a_load_stat = xQueueCreate( 1, sizeof( loadStat ) );
+	Q_ma_load_stat = xQueueCreate( 1, sizeof( handledLoadStat ) );
+	Q_ms_load_stat = xQueueCreate( 1, sizeof( handledLoadStat ) );
+
 	Q_threshold = xQueueCreate( 2, sizeof( double ) );
 	Q_network_stat = xQueueCreate( 10, sizeof( int ) );
-	Q_load_stat = xQueueCreate( 1, sizeof( loadStat ) );
 	Q_switch = xQueueCreate( 10, sizeof( unsigned int ) );
 	Q_resp = xQueueCreate( 1, sizeof( int ) );
 	Q_tmp = xQueueCreate(100, sizeof(int));
@@ -567,7 +708,7 @@ void initOSDataStructs(void)
 // This function creates the tasks used in this example
 void initCreateTasks(void)
 {
-	//xTaskCreate( vAdd_Task, "AddTask", configMINIMAL_STACK_SIZE, NULL, add_priority, NULL );
+	xTaskCreate( vAdd_Task, "AddTask", configMINIMAL_STACK_SIZE, NULL, add_priority, NULL );
 	xTaskCreate( vFrequAnalyser_Task, "FreqAnalyserTask", configMINIMAL_STACK_SIZE, NULL, freq_analyser_priority, NULL );
 	xTaskCreate( vNetworkStatus_Task, "NetworkStatusTask", configMINIMAL_STACK_SIZE, NULL, network_status_priority, NULL );
 	xTaskCreate( vShed_Task, "ShedTask", configMINIMAL_STACK_SIZE, NULL, shed_priority, NULL );
