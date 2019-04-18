@@ -1,22 +1,13 @@
-// Standard includes
+/* Standard includes */
+#include <system.h>
 #include <stdio.h>
 #include <string.h>
-#include <system.h>
 #include <io.h>
 #include <math.h>
 #include <stddef.h>
 #include <unistd.h> // for sleep
-#include <sys/alt_irq.h>
-#include <altera_avalon_pio_regs.h>
 
-#include "altera_avalon_uart_regs.h"
-#include "altera_avalon_uart.h"
-#include "altera_up_avalon_ps2.h"
-#include "altera_up_ps2_keyboard.h"
-#include "altera_up_avalon_video_character_buffer_with_dma.h"
-#include "altera_up_avalon_video_pixel_buffer_dma.h"
-
-// Scheduler includes
+/* Scheduler includes*/
 #include "FreeRTOS/FreeRTOS.h"
 #include "FreeRTOS/task.h"
 #include "FreeRTOS/queue.h"
@@ -24,7 +15,19 @@
 #include "FreeRTOS/portmacro.h"
 #include "FreeRTOS/timers.h"
 
-// Definition of Task Stacks
+/* Altera includes. */
+#include <sys/alt_alarm.h>
+#include <sys/alt_irq.h>
+#include "altera_avalon_pio_regs.h"
+#include "altera_avalon_uart_regs.h"
+#include "altera_avalon_uart.h"
+#include "altera_up_avalon_ps2.h"
+#include "altera_up_ps2_keyboard.h"
+#include "altera_up_avalon_video_character_buffer_with_dma.h"
+#include "altera_up_avalon_video_pixel_buffer_dma.h"
+
+
+/* Definition of Task Stacks */
 #define SAMPLING_FREQ 16000.0
 
 /* RoC value and frequency value */
@@ -33,52 +36,44 @@ typedef struct{
 	double newFreq;
 }freqValues;
 
-// Definition of Task Priorities
+/* Definition of Task Priorities */
 #define add_priority 5
-#define freq_analyser_priority 5
-#define network_status_priority 5
 #define shed_priority 5
-#define load_manager_priority 5
-#define switch_con_priority 5
-#define PRVGA_priority 5
-#define lcd_mode_priority 5
-#define Timer500Reset_priority (tskIDLE_PRIORITY+1)
+
+#define network_status_priority 6
+#define load_manager_priority 6
+#define PRVGA_priority 7
+#define lcd_mode_priority 4
+
+#define switch_con_priority 4
+#define keyboard_priority 4
+//#define Timer500Reset_priority (tskIDLE_PRIORITY+1)
 
 // used to delete a task
 TaskHandle_t xHandle;
 
-// Definition of Semaphore
+/* Definition of Semaphore */
 SemaphoreHandle_t add_sem;
 SemaphoreHandle_t manager_sem;
-SemaphoreHandle_t network_sem;
 SemaphoreHandle_t roc_sem;
-SemaphoreHandle_t shed_sem;
-SemaphoreHandle_t state_sem;
+SemaphoreHandle_t timer_sem;
 SemaphoreHandle_t switch_sem;
 
-/*
-SemaphoreHandle_t callback_sem;
-SemaphoreHandle_t reset_sem;*/
-
 /* Queue Definitions */
-xQueueHandle Q_add;
 xQueueHandle Q_freq_data;
-xQueueHandle Q_freq_calc;
-xQueueHandle Q_resp;
 xQueueHandle Q_network_stat;
-xQueueHandle Q_threshold;
 xQueueHandle Q_timer_reset;
 xQueueHandle Q_tmp;
-
 xQueueHandle Q_switch;
 xQueueHandle Q_load_stat;
+xQueueHandle Q_a_load_stat;
 xQueueHandle Q_ms_load_stat;
 xQueueHandle Q_ma_load_stat;
-xQueueHandle Q_a_load_stat;
+xQueueHandle Q_keyboard;
 
 /* Timers*/
 TimerHandle_t timer500;
-void vTimer500Callback();
+void vTimer500_Callback(xTimerHandle t_timer);
 
 /* Globals variables */
 typedef enum
@@ -105,17 +100,16 @@ int timer_fin = 0;
 int stable_network = 1;
 
 char sem_owner_task_name[20];
-static double freqThres = 49; //for test purpose - delete later
-static double rocThres = 20; //for test purpose - delete later
+static double freqThreshold=49; //for test purpose - delete later
+static double rocThreshold=20; //for test purpose - delete later
 
 int iMode = normal;
 int Timer_500_flag = 0;
-void vfreq_relay(void);
 
 /* Local Function Prototypes */
 void initOSDataStructs(void);
 void initCreateTasks(void);
-void vNormalMode(void);
+void vfreq_relay(void);
 
 /* VGA Variables */
 //For frequency plot
@@ -151,23 +145,28 @@ FILE *lcd;
 /* shows what the current mode is through LCD Display on push button press*/
 void lcd_set_mode()
 {
-	unsigned int maintMode = 0;
 	int tmp;
+	lcd = fopen(CHARACTER_LCD_NAME, "w");
+	fprintf (lcd, "MAINTENANCE MODE\n");
+	fclose(lcd);
+
 	while (1)
 	{
 		if (xQueueReceive(Q_tmp, &tmp, portMAX_DELAY) == pdTRUE)
 		{
-			maintMode = !maintMode;
-			printf("maint mode is: %d\n", maintMode);
+			iMode = !iMode;
+			printf("iMode: %d\n", iMode);
 			lcd = fopen(CHARACTER_LCD_NAME, "w");
 			if (lcd != NULL)
 			{
 				fprintf(lcd, "%c%s", ESC, CLEAR_LCD_STRING);
 
-				if (maintMode) {
+				if (iMode)
+				{
 					printf("maint mode\n");
 					fprintf (lcd, "MAINTENANCE MODE\n");
-				} else {
+				} else
+				{
 					printf("normal mode\n");
 					fprintf(lcd, "NORMAL MODE\n");
 				}
@@ -291,12 +290,72 @@ void button_mode_isr(void* context, alt_u32 id)
 	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
 }
 
-/* Keyboard ISR */
-void ps2_isr(void* ps2_device, alt_u32 id){
-	unsigned char byte;
-	alt_up_ps2_read_data_byte_timeout(ps2_device, &byte);
-	xQueueSendToBackFromISR( Q_threshold, &byte, pdFALSE );
-	return;
+void ps2_isr (void* context, alt_u32 id)
+{
+	char ascii;
+	int status = 0;
+	unsigned char key = 0;
+	KB_CODE_TYPE decode_mode;
+	status = decode_scancode (context, &decode_mode , &key , &ascii) ;
+	if ( status == 0 ) //success
+	{
+		if (key == 0x5A){
+			ascii = 0x0D;
+		}
+		if (decode_mode != KB_LONG_BINARY_MAKE_CODE && decode_mode != KB_BREAK_CODE){
+			xQueueSendToBackFromISR(Q_keyboard, &ascii, 0);
+		}
+	}
+}
+
+void vkeyboardHandlerTask (void * pvParameters)
+{
+	char keyInput;
+	unsigned int val;
+	unsigned int inputs[2] = {0, 0};
+	int i = 0;
+
+	while (1){
+		while(uxQueueMessagesWaiting(Q_keyboard) != 0){
+			xQueueReceive(Q_keyboard, (void*) &keyInput, 0);
+			printf("print: %d \n", keyInput-0x30);
+
+			/*check if the input number is valid*/
+			if (keyInput >= 0x30 && keyInput <=0x39){
+				val = keyInput-0x30;
+				inputs[i] = inputs[i]*10 + val;
+			}
+
+			/* check the keyboard input is comma*/
+			else if (keyInput == 0x2C)
+			{
+				i++;
+				if (i >= 2){
+					xSemaphoreTake(roc_sem, portMAX_DELAY);
+					freqThreshold = inputs[0];
+					rocThreshold = inputs[1];
+					inputs[0] = 0;
+					inputs[1] = 0;
+					i = 0;
+					printf("New Value: %f,  %f\n", freqThreshold, rocThreshold);
+					xSemaphoreGive(roc_sem);
+
+				}
+			}
+			/* check if the keyboard input is enter*/
+			else if (keyInput == 0x0D){
+				xSemaphoreTake(roc_sem, portMAX_DELAY);
+				freqThreshold = inputs[0];
+				rocThreshold = inputs[1];
+				inputs[0] = 0;
+				inputs[1] = 0;
+				i = 0;
+				printf("New Value: %f,  %f\n", freqThreshold, rocThreshold);
+				xSemaphoreGive(roc_sem);
+			}
+		}
+		vTaskDelay(10);
+	}
 }
 
 /* Read incoming frequency from ISR*/
@@ -304,60 +363,38 @@ void vfreq_relay()
 {
 	double new_freq = SAMPLING_FREQ / (double) IORD(FREQUENCY_ANALYSER_BASE, 0);
 
-	// Send calculation tasks
+	/* Send calculation tasks */
 	xQueueSendToBackFromISR(Q_freq_data, &new_freq, pdFALSE);
-	xSemaphoreGiveFromISR(network_sem, pdFALSE);
 	return;
-}
-
-/* Read the frequency from the frequency relay */
-void vFrequAnalyser_Task()
-{
-	double new_freq;
-	double freqPrev = 50.0;
-	freqValues freqValues;
-
-	while(1)
-	{
-		if(xSemaphoreTake(network_sem, portMAX_DELAY) == pdTRUE)
-		{
-			xQueueReceive(Q_freq_data, &new_freq, 0);
-			// Do calculations
-			freqValues.newFreq = new_freq;
-			freqValues.rocValue = ((new_freq-freqPrev)*SAMPLING_FREQ) / IORD(FREQUENCY_ANALYSER_BASE, 0);
-			freqPrev = new_freq;
-
-			//Send new Data to the Queue
-			if(xQueueSend(Q_freq_calc, &freqValues, 0) == pdFALSE){
-				xQueueReset( Q_freq_calc );
-			}
-			xSemaphoreGive(roc_sem);
-		}
-		vTaskDelay(10);
-	}
 }
 
 /* Read the frequency from the*/
 void vNetworkStatus_Task(void * pvParameters)
 {
 	freqValues freqValues;
+	double new_freq;
+	double freqPrev = 50.0;
+	double rocValue = 0;
 	int stable = 1;
 
 	while(1)
 	{
-		if(xSemaphoreTake(roc_sem, portMAX_DELAY))
-		{
-			xQueueReceive(Q_freq_calc, (void *) &freqValues, 0);
-			if(freqValues.newFreq < freqThres || fabs(freqValues.rocValue) > rocThres)
+		if(xQueueReceive(Q_freq_data, &new_freq, portMAX_DELAY) == pdTRUE)
+			{
+			xSemaphoreTake(roc_sem, portMAX_DELAY);
+			//Calculate Rate of Change Value
+			rocValue = ((new_freq-freqPrev)*SAMPLING_FREQ) / IORD(FREQUENCY_ANALYSER_BASE, 0);
+			freqPrev = new_freq;
+			xSemaphoreGive(roc_sem);
+
+			if(new_freq < freqThreshold || fabs(rocValue) > rocThreshold)
 			{
 				stable = 0;
-				xQueueSend(Q_network_stat, &stable, 0);
 			}
 			else{
 				stable = 1;
-				xQueueSend(Q_network_stat, &stable, 0);
 			}
-			xSemaphoreGive(manager_sem);
+			xQueueSend(Q_network_stat, &stable, 0);
 		}
 		vTaskDelay(10);
 	}
@@ -391,132 +428,114 @@ void vLoadManager_Task(void * pvParameters)
 
 	int shed_flag = 0;
 	int add_flag = 0;
+	int timer_start = 0;
 
 	while(1)
 	{
-		if(xSemaphoreTake(manager_sem, portMAX_DELAY))
+		if(uxQueueMessagesWaiting(Q_network_stat) == pdTRUE)
 		{
-			xQueueReceive(Q_switch, &iCurrentLoad, 0);
-			loadStat.iCurrentLoad = iCurrentLoad;
+			if(xQueueReceive(Q_switch, &iCurrentLoad, 0) == pdTRUE)
+			{
+				loadStat.iCurrentLoad = iCurrentLoad;
+				loadStat.iSheddedLoad &= iCurrentLoad;
+				loadStat.iUnSheddedLoad &= iCurrentLoad;
+				handledLoadStat.iSheddedLoad &= iCurrentLoad;
+				handledLoadStat.iUnSheddedLoad &= iCurrentLoad;
 
-			// SHED TASK
-			if(xQueueReceive(Q_network_stat, &stability, 0) == pdTRUE){
-				// if timer is not active and unstable - start timer - shed load
-				if(stability == 0 && !timer_flag && !timer_fin){
-				// If network is unstable and there hasn't been a shedded load
-					if(uxQueueMessagesWaiting(Q_load_stat) == 0){
-						printf("A\n");
-						xTimerStart(timer500,0);
-						timer_flag = 1;
-						shed_flag = 1;
-						xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
-					}
-				}
+			}
+
+			if(xQueueReceive(Q_network_stat, &stability, 0) == pdTRUE && loadStat.iCurrentLoad != 0 && iMode == normal){
+
+				//SHED
+				//// If timer is not active and unstable - start timer - shed load
+				//// if timer is active (from stable) and has become unstable - reset timer - shed load
+
+				//// If timer has finished and unstable - reset timer - shed load
+				//// If timer has finished (from unstable) and has become stable - reset timer
+					//// if a load was shed - add load
+
+				//ADD
+				// If timer has finished (from unstable) and has become stable - reset timer
+					// If a load was shed - add load
+
 				// if timer is active (from stable) and has become unstable - reset timer - shed load
-				else if(stability == 0 && timer_flag && !timer_fin){
-					if(uxQueueMessagesWaiting(Q_load_stat) == 0){
-						printf("B\n");
-						xTimerStart(timer500,0);
-						shed_flag = 1;
-						xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
-					}
+				if(timer_flag && !timer_fin && !stability){
+					xSemaphoreTake(timer_sem, portMAX_DELAY);
+					timer_flag = 1;
+					shed_flag = 1;
+					timer_start = 1;
+					xSemaphoreGive(timer_sem);
 				}
-				// if timer has finished and unstable - reset timer - shed load
-				else if(stability == 0 && !timer_flag && timer_fin){
+				// If timer is not active and unstable - start timer - shed load
+				else if(!timer_flag && !timer_fin && !stability){
+					xSemaphoreTake(timer_sem, portMAX_DELAY);
+					timer_flag = 1;
+					shed_flag = 1;
+					timer_start = 1;
+					xSemaphoreGive(timer_sem);
+				}
+				// If timer has finished and unstable - reset timer - shed load
+				else if(!timer_flag && timer_fin && !stability){
+					xSemaphoreTake(timer_sem, portMAX_DELAY);
+					timer_flag = 1;
+					shed_flag = 1;
 					timer_fin = 0;
-					timer_flag = 0;
-					if(uxQueueMessagesWaiting(Q_load_stat) == 0){
-						printf("C\n");
-						xTimerStart(timer500,0);
-						shed_flag = 1;
-						xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
-					}
-				}
-				// If timer is not active and stable - do nothing, red led = switches
-				if(stability == 1 && !timer_flag && !timer_fin){
-					// do nothing
-					// red led = switches
-					printf("E\n");
+					timer_start = 1;
+					xSemaphoreGive(timer_sem);
 				}
 				// If timer has finished (from unstable) and has become stable - reset timer
-				else if(stability == 1 && timer_flag && timer_fin){
-					timer_fin = 0;
-					xTimerStart(timer500,0);
-					printf("add - iSheddedLoad: %d",loadStat.iSheddedLoad);
-					if(loadStat.iSheddedLoad > 0 && uxQueueMessagesWaiting(Q_a_load_stat) == 0){
-						// if a load was shed - add load
-						printf("F\n");
+				else if(!timer_flag && timer_fin && stability){
+					// if a load was shed - add load
+
+					if(loadStat.iSheddedLoad > 0){
+						xSemaphoreTake(timer_sem, pdFALSE);
 						add_flag = 1;
-						xQueueSend(Q_a_load_stat, &loadStat, portMAX_DELAY);
-					}
-					else if(loadStat.iSheddedLoad == 0){
-						printf("G\n");
-						// if no loads were shed - do nothing
+						timer_fin = 0;
+						timer_start = 1;
+						xSemaphoreGive(timer_sem);
 					}
 				}
+
+				if(timer_start){
+					timer_start = 0;
+					if (xTimerStart(timer500, 10) != pdPASS){
+						printf("Cannot start 500ms timer\n");
+					}
+				}
+
+				if(shed_flag){
+					xQueueSend(Q_load_stat, &loadStat, portMAX_DELAY);
+				}
+				else if(add_flag){
+					xQueueSend(Q_a_load_stat, &loadStat, portMAX_DELAY);
+				}
 			}
-			else if(xQueueReceive(Q_ms_load_stat, &handledLoadStat, 0) == pdTRUE && shed_flag){
-				// RECIEVE SHEDDED CONFIG
-				printf("D\n");
+			else{
+				loadStat.iSheddedLoad = 0;
+				loadStat.iUnSheddedLoad = 0;
+				handledLoadStat.iSheddedLoad = 0;
+				handledLoadStat.iUnSheddedLoad = 0;
+			}
+
+			if (xQueueReceive(Q_ms_load_stat, &handledLoadStat, 0) == pdTRUE && shed_flag){
+				printf("RECEIVE SHED\n");
 				shed_flag = 0;
 				loadStat.iSheddedLoad = handledLoadStat.iSheddedLoad;
 				loadStat.iUnSheddedLoad = handledLoadStat.iUnSheddedLoad;
 			}
-			else if(xQueueReceive(Q_ma_load_stat, &handledLoadStat, 0) == pdTRUE && add_flag){
-				// RECEIVE ADDED CONFIG
-				printf("H\n");
+			else if (xQueueReceive(Q_ma_load_stat, &handledLoadStat, 0) == pdTRUE && add_flag){
+				printf("ADD SHED\n");
 				add_flag = 0;
 				loadStat.iSheddedLoad = handledLoadStat.iSheddedLoad;
 				loadStat.iUnSheddedLoad = handledLoadStat.iUnSheddedLoad;
 			}
 
-			/*
-			//ADD TASK
-			if(xQueueReceive(Q_network_stat, &stability, 0) == pdTRUE){
-				// If timer is not active and stable - do nothing, red led = switches
-				if(stability == 1 && !timer_flag && !timer_fin){
-					// do nothing
-					// red led = switches
-					printf("E\n");
-				}
-				// If timer has finished (from unstable) and has become stable - reset timer
-				else if(stability == 1 && timer_flag && timer_fin){
-					timer_fin = 0;
-					xTimerStart(timer500,0);
-					printf("add - iSheddedLoad: %d",loadStat.iSheddedLoad);
-					if(loadStat.iSheddedLoad > 0 && uxQueueMessagesWaiting(Q_a_load_stat) == 0){
-						// if a load was shed - add load
-						printf("F\n");
-						add_flag = 1;
-						xQueueSend(Q_a_load_stat, &loadStat, portMAX_DELAY);
-					}
-					else if(loadStat.iSheddedLoad == 0){
-						printf("G\n");
-						// if no loads were shed - do nothing
-					}
-				}
-			}
-			else if(xQueueReceive(Q_ma_load_stat, &handledLoadStat, 0) == pdTRUE && add_flag == 1){
-				// RECEIVE ADDED CONFIG
-				printf("H\n");
-				add_flag = 0;
-				loadStat.iSheddedLoad = handledLoadStat.iSheddedLoad;
-				loadStat.iUnSheddedLoad = handledLoadStat.iUnSheddedLoad;
-			}*/
-
-//			xSemaphoreGive(switch_sem);
-			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, handledLoadStat.iSheddedLoad & 0x1F);
-			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, handledLoadStat.iUnSheddedLoad & 0x1F);
+			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, loadStat.iSheddedLoad & 0x1F);
+			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, (loadStat.iSheddedLoad ^ loadStat.iCurrentLoad) & 0x1F);
 		}
-		vTaskDelay(15);
+		vTaskDelay(10);
 	}
 }
-
-// shed load - start timer
-// if network becomes stable before timer has finished reset timer.
-// at end of timer check network stat.
-// if unstable - shed load - reset timer
-
 
 /* Shedding load task */
 void vShed_Task(void *pvParameters)
@@ -526,7 +545,7 @@ void vShed_Task(void *pvParameters)
 
 	while(1)
 	{
-		if(uxQueueMessagesWaiting(Q_load_stat) != 0 && iMode == normal){
+		if(uxQueueMessagesWaiting(Q_load_stat) != 0){
 			xQueueReceive(Q_load_stat,  (void *) &loadStat, portMAX_DELAY);
 
 			if((loadStat.iCurrentLoad & 0x01) == 0x01 && (loadStat.iSheddedLoad & 0x01) != 0x01){
@@ -554,7 +573,6 @@ void vShed_Task(void *pvParameters)
 			handledLoadStat.iUnSheddedLoad = loadStat.iUnSheddedLoad;
 
 			xQueueSend(Q_ms_load_stat, (void*)&handledLoadStat, portMAX_DELAY);
-			xSemaphoreGive(manager_sem);
 		}
 		vTaskDelay(10);
 	}
@@ -568,40 +586,36 @@ void vAdd_Task(void *pvParameters)
 
 	while(1)
 	{
-		if(uxQueueMessagesWaiting(Q_a_load_stat) != 0 && iMode == normal){
+		if(uxQueueMessagesWaiting(Q_a_load_stat) != 0){
 			xQueueReceive(Q_a_load_stat,  (void *) &loadStat, portMAX_DELAY);
 			printf("b Add iSheddedLoad: %d\n",handledLoadStat.iSheddedLoad);
 			printf("b Add iUnSheddedLoad: %d\n",handledLoadStat.iUnSheddedLoad);
 
 			if((loadStat.iCurrentLoad & 0x16) == 0x16 && (loadStat.iSheddedLoad & 0x16) == 0x16){
 				loadStat.iSheddedLoad &= ~0x16;
-				loadStat.iUnSheddedLoad &= 0x16;
+				loadStat.iUnSheddedLoad |= 0x16;
 			}
 			else if((loadStat.iCurrentLoad & 0x08) == 0x08 && (loadStat.iSheddedLoad & 0x08) == 0x08){
 				loadStat.iSheddedLoad &= ~0x08;
-				loadStat.iUnSheddedLoad &= 0x08;
+				loadStat.iUnSheddedLoad |= 0x08;
 			}
 			else if((loadStat.iCurrentLoad & 0x04) == 0x04 && (loadStat.iSheddedLoad & 0x04) == 0x04){
 				loadStat.iSheddedLoad &= ~0x04;
-				loadStat.iUnSheddedLoad &= 0x04;
+				loadStat.iUnSheddedLoad |= 0x04;
 			}
 			else if((loadStat.iCurrentLoad & 0x02) == 0x02 && (loadStat.iSheddedLoad & 0x02) == 0x02){
 				loadStat.iSheddedLoad &= ~0x02;
-				loadStat.iUnSheddedLoad &= 0x02;
+				loadStat.iUnSheddedLoad |= 0x02;
 			}
 			else if((loadStat.iCurrentLoad & 0x01) == 0x01 && (loadStat.iSheddedLoad & 0x01) == 0x01){
 				loadStat.iSheddedLoad &= ~0x01;
-				loadStat.iUnSheddedLoad &= 0x01;
+				loadStat.iUnSheddedLoad |= 0x01;
 			}
 
 			handledLoadStat.iSheddedLoad = loadStat.iSheddedLoad;
 			handledLoadStat.iUnSheddedLoad = loadStat.iUnSheddedLoad;
 
-			printf("Add iSheddedLoad: %d\n",handledLoadStat.iSheddedLoad);
-			printf("Add iUnSheddedLoad: %d\n",handledLoadStat.iUnSheddedLoad);
-
 			xQueueSend(Q_ma_load_stat, (void*)&handledLoadStat, portMAX_DELAY);
-			xSemaphoreGive(manager_sem);
 		}
 		vTaskDelay(10);
 	}
@@ -622,31 +636,36 @@ void vTimer500Reset_Task(void *pvParameters){
 }
 
 /* Timer functions*/
-void vTimer500_Callback(xTimerHandle t_timer500)
+void vTimer500_Callback(xTimerHandle t_timer)
 {
-	printf("--------------------------\n");
+	//xSemaphoreTake(timer_sem, portMAX_DELAY);
 	timer_flag = 0;
 	timer_fin = 1;
-
+	xSemaphoreGiveFromISR(timer_sem, pdTRUE);
 	return;
 }
 
 void main(int argc, char* argv[], char* envp[])
 {
-	/* Start Frequency ISR */
-	alt_irq_register(FREQUENCY_ANALYSER_IRQ, 0, vfreq_relay);
-
-	/* Start Keyboard setup and ISR */
 	alt_up_ps2_dev * ps2_device = alt_up_ps2_open_dev(PS2_NAME);
+
 	if(ps2_device == NULL){
 		printf("can't find PS/2 device\n");
-		return;
 	}
+
+	alt_up_ps2_clear_fifo (ps2_device) ;
 	alt_up_ps2_enable_read_interrupt(ps2_device);
 	alt_irq_register(PS2_IRQ, ps2_device, ps2_isr);
 
+	/* Register the PS/2 interrupt */
+	IOWR_8DIRECT(PS2_BASE,4,1);
+
+	/* Start Frequency ISR */
+	alt_irq_register(FREQUENCY_ANALYSER_IRQ, 0, vfreq_relay);
+
 	/* Push button setup */
 	int buttonValue = 0;
+
 	/* clears the edge capture register. Writing 1 to bit clears pending interrupt for corresponding button.*/
 	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x07);
 
@@ -657,12 +676,7 @@ void main(int argc, char* argv[], char* envp[])
 	alt_irq_register(PUSH_BUTTON_IRQ,(void*)&buttonValue, button_mode_isr);
 
 	/* Create Timers */
-//	IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0x1F);
-	timer500 = xTimerCreate("Timer500", 500, pdTRUE, NULL, vTimer500_Callback);
-//
-//	if(xTimerStart(timer500,0) != pdPASS){
-//		printf("Cannot start timer");
-//	}
+	timer500 = xTimerCreate("Timer500", pdMS_TO_TICKS(500), pdFALSE, NULL, vTimer500_Callback);
 
 	initOSDataStructs();
 	initCreateTasks();
@@ -676,29 +690,23 @@ void main(int argc, char* argv[], char* envp[])
 void initOSDataStructs(void)
 {
 	/* Create Semaphores */
-	shed_sem = xSemaphoreCreateBinary();
 	manager_sem = xSemaphoreCreateBinary();
-	network_sem = xSemaphoreCreateBinary();
-	roc_sem = xSemaphoreCreateBinary();
-	state_sem = xSemaphoreCreateBinary();
+	roc_sem = xSemaphoreCreateMutex();
 	switch_sem = xSemaphoreCreateBinary();
-
-	//callback_sem = xSemaphoreCreateBinary();
-	//reset_sem = xSemaphoreCreateBinary()
+	timer_sem = xSemaphoreCreateMutex();
 
 	/* Create Queues */
 	Q_freq_data = xQueueCreate( 100, sizeof( double ) );
-	Q_freq_calc = xQueueCreate( 100, sizeof( freqValues ) );
 	Q_load_stat = xQueueCreate( 1, sizeof( loadStat ) );
 	Q_a_load_stat = xQueueCreate( 1, sizeof( loadStat ) );
 	Q_ma_load_stat = xQueueCreate( 1, sizeof( handledLoadStat ) );
 	Q_ms_load_stat = xQueueCreate( 1, sizeof( handledLoadStat ) );
 
-	Q_threshold = xQueueCreate( 2, sizeof( double ) );
 	Q_network_stat = xQueueCreate( 10, sizeof( int ) );
 	Q_switch = xQueueCreate( 10, sizeof( unsigned int ) );
-	Q_resp = xQueueCreate( 1, sizeof( int ) );
 	Q_tmp = xQueueCreate(100, sizeof(int));
+
+	Q_keyboard = xQueueCreate(10, sizeof (char));
 
 	Q_timer_reset = xQueueCreate( 4, sizeof( int ) );
 
@@ -708,15 +716,16 @@ void initOSDataStructs(void)
 // This function creates the tasks used in this example
 void initCreateTasks(void)
 {
-	xTaskCreate( vAdd_Task, "AddTask", configMINIMAL_STACK_SIZE, NULL, add_priority, NULL );
-	xTaskCreate( vFrequAnalyser_Task, "FreqAnalyserTask", configMINIMAL_STACK_SIZE, NULL, freq_analyser_priority, NULL );
 	xTaskCreate( vNetworkStatus_Task, "NetworkStatusTask", configMINIMAL_STACK_SIZE, NULL, network_status_priority, NULL );
+	xTaskCreate( vAdd_Task, "AddTask", configMINIMAL_STACK_SIZE, NULL, add_priority, NULL );
 	xTaskCreate( vShed_Task, "ShedTask", configMINIMAL_STACK_SIZE, NULL, shed_priority, NULL );
+
 	xTaskCreate( vLoadManager_Task, "LoadManagerTask", configMINIMAL_STACK_SIZE, NULL, load_manager_priority, NULL );
 	xTaskCreate( vSwitchCon_Task, "SwitchCon", configMINIMAL_STACK_SIZE, NULL, switch_con_priority, NULL );
-	xTaskCreate( vTimer500Reset_Task, "Timer500Reset", configMINIMAL_STACK_SIZE, NULL, Timer500Reset_priority, NULL );
-	// xTaskCreate( PRVGADraw_Task, "PRVGADraw", configMINIMAL_STACK_SIZE, NULL, PRVGA_priority, NULL );
+	//xTaskCreate( vTimer500Reset_Task, "Timer500Reset", configMINIMAL_STACK_SIZE, NULL, Timer500Reset_priority, NULL );
+	xTaskCreate( PRVGADraw_Task, "PRVGADraw", configMINIMAL_STACK_SIZE, NULL, PRVGA_priority, NULL );
 	xTaskCreate (lcd_set_mode, "lcd_mode", configMINIMAL_STACK_SIZE, NULL, lcd_mode_priority, NULL );
+	xTaskCreate (vkeyboardHandlerTask, "keyboardTask", configMINIMAL_STACK_SIZE, NULL, keyboard_priority, NULL);
 
 	return;
 }
