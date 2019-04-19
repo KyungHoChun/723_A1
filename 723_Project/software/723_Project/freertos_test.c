@@ -29,12 +29,6 @@
 /* Definition of Task Stacks */
 #define SAMPLING_FREQ 16000.0
 
-/* RoC value and frequency value */
-typedef struct{
-	double rocValue;
-	double newFreq;
-}freqValues;
-
 // used to delete a task
 TaskHandle_t xHandle;
 
@@ -62,6 +56,7 @@ TimerHandle_t timer500;
 void vTimer500_Callback(xTimerHandle t_timer);
 
 /* Globals variables */
+
 typedef enum
 {
 	normal = 0,
@@ -256,22 +251,21 @@ void PRVGADraw_Task(void *pvParameters){
 	}
 }
 
-/* Push button mode */
+/* ISR Push button mode */
 void vISRButtonMode(void* context, alt_u32 id)
 {
 	volatile int* button = (volatile int*) context;
-	//cast the context
+	/* Cast the context */
 	(*button) = IORD_ALTERA_AVALON_PIO_DATA(PUSH_BUTTON_BASE);
-
 	int btn = (int) *button;
-	printf("button number is %d\n", btn);
 
 	xQueueSendToBackFromISR(QBtn, &btn, pdFALSE);
 
-	// clears the edge capture register
+	/* Clears the edge capture register */
 	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
 }
 
+/* ISR for keyboard inputs */
 void vISRKeyboard(void* context, alt_u32 id)
 {
 	char cAscii;
@@ -292,6 +286,7 @@ void vISRKeyboard(void* context, alt_u32 id)
 	}
 }
 
+/* Handles the inputs of the keyboard, changes the thresholds of the roc and frequency */
 void vTaskKeyboardHandler (void * pvParameters)
 {
 	char cKeyInput;
@@ -355,7 +350,6 @@ void vISRFreqRelay()
 /* Receives frequency from the relay and calculates ROC*/
 void vTaskNetworkStat(void * pvParameters)
 {
-	freqValues freqValues;
 	double dFreqNew;
 	double dFreqPrev = 50.0;
 	double dRocVal = 0.0;
