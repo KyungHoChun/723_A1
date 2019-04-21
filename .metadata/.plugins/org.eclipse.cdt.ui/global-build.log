@@ -1651,3 +1651,64 @@ Info:                   130561 KBytes free for stack + heap.
 Info: Creating 723_Project.objdump
 nios2-elf-objdump --disassemble --syms --all-header --source 723_Project.elf >723_Project.objdump
 [723_Project build complete]
+13:05:46 **** Build of configuration Nios II for project 723_Project_bsp ****
+make all 
+[BSP build complete]
+13:05:48 **** Build of configuration Nios II for project 723_Project ****
+make all 
+makefile:767: warning: overriding commands for target `obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o'
+makefile:764: warning: ignoring old commands for target `obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o'
+Info: Building ../723_Project_bsp/
+C:/intelFPGA/16.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../723_Project_bsp/
+[BSP build complete]
+make: *** No rule to make target `.metadata/.plugins/org.eclipse.cdt.make.core/specs.cpp', needed by `obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o'.  Stop.
+13:06:31 **** Incremental Build of configuration Nios II for project 723_Project_bsp ****
+make all 
+[BSP build complete]
+13:06:32 **** Incremental Build of configuration Nios II for project 723_Project ****
+make all 
+makefile:767: warning: overriding commands for target `obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o'
+makefile:764: warning: ignoring old commands for target `obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o'
+Info: Building ../723_Project_bsp/
+C:/intelFPGA/16.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../723_Project_bsp/
+[BSP build complete]
+make: *** No rule to make target `.metadata/.plugins/org.eclipse.cdt.make.core/specs.cpp', needed by `obj/default/.metadata/.plugins/org.eclipse.cdt.make.core/specs.o'.  Stop.
+13:10:05 **** Incremental Build of configuration Nios II for project 723_Project_bsp ****
+make all 
+[BSP build complete]
+13:10:06 **** Incremental Build of configuration Nios II for project 723_Project ****
+make all 
+Building file: ../FreeRTOS/croutine.c
+Invoking: Nios II GCC C Compiler
+nios2-elf-gcc -O2 -g -Wall -c -fmessage-length=0 -MMD -MP -MF"FreeRTOS/croutine.d" -MT"FreeRTOS/croutine.d" -o "FreeRTOS/croutine.o" "../FreeRTOS/croutine.c"
+In file included from ../FreeRTOS/FreeRTOS.h:98:0,
+                 from ../FreeRTOS/croutine.c:70:
+../FreeRTOS/FreeRTOSConfig.h:78:20: fatal error: system.h: No such file or directory
+compilation terminated.
+make: *** [FreeRTOS/croutine.o] Error 1
+13:14:19 **** Incremental Build of configuration Nios II for project 723_Project_bsp ****
+make all 
+[BSP build complete]
+13:14:20 **** Incremental Build of configuration Nios II for project 723_Project ****
+make all 
+Building file: ../FreeRTOS/croutine.c
+Invoking: Nios II GCC C Compiler
+nios2-elf-gcc -O2 -g -Wall -c -fmessage-length=0 -MMD -MP -MF"FreeRTOS/croutine.d" -MT"FreeRTOS/croutine.d" -o "FreeRTOS/croutine.o" "../FreeRTOS/croutine.c"
+In file included from ../FreeRTOS/FreeRTOS.h:98:0,
+                 from ../FreeRTOS/croutine.c:70:
+../FreeRTOS/FreeRTOSConfig.h:78:20: fatal error: system.h: No such file or directory
+compilation terminated.
+make: *** [FreeRTOS/croutine.o] Error 1
+13:18:51 **** Incremental Build of configuration Nios II for project 723_Project_bsp ****
+make all 
+[BSP build complete]
+13:18:52 **** Incremental Build of configuration Nios II for project 723_Project ****
+make all 
+Building file: ../FreeRTOS/croutine.c
+Invoking: Nios II GCC C Compiler
+nios2-elf-gcc -O2 -g -Wall -c -fmessage-length=0 -MMD -MP -MF"FreeRTOS/croutine.d" -MT"FreeRTOS/croutine.d" -o "FreeRTOS/croutine.o" "../FreeRTOS/croutine.c"
+In file included from ../FreeRTOS/FreeRTOS.h:98:0,
+                 from ../FreeRTOS/croutine.c:70:
+../FreeRTOS/FreeRTOSConfig.h:78:20: fatal error: system.h: No such file or directory
+compilation terminated.
+make: *** [FreeRTOS/croutine.o] Error 1

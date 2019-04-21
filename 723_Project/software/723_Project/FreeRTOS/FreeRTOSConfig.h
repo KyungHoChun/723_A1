@@ -75,7 +75,7 @@
  */
 //#error Ensure CreateProjectDirectoryStructure.bat has been executed before building.  See comment immediately above.
 
-#include "system.h"
+#include <system.h>
 
 /*-----------------------------------------------------------
  * Application specific definitions.

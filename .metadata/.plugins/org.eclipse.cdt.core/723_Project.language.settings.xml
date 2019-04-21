@@ -1376,24 +1376,6 @@
 					</entry>
 				</language>
 			</provider>
-			<provider id="altera.tool.Nios2GCCBuildCommandParser">
-				<language id="org.eclipse.cdt.core.gcc">
-					<resource project-relative-path="freertos_test.c">
-						<entry kind="includePath" name="/723_Project_bsp/HAL/inc">
-							<flag value="VALUE_WORKSPACE_PATH|RESOLVED"/>
-						</entry>
-						<entry kind="includePath" name="/723_Project_bsp">
-							<flag value="VALUE_WORKSPACE_PATH|RESOLVED"/>
-						</entry>
-						<entry kind="includePath" name="/723_Project_bsp/drivers/inc">
-							<flag value="VALUE_WORKSPACE_PATH|RESOLVED"/>
-						</entry>
-						<entry kind="macro" name="ALT_NO_INSTRUCTION_EMULATION" value=""/>
-						<entry kind="macro" name="ALT_SINGLE_THREADED" value=""/>
-						<entry kind="macro" name="__hal__" value=""/>
-					</resource>
-				</language>
-			</provider>
 		</extension>
 	</configuration>
 </project>
