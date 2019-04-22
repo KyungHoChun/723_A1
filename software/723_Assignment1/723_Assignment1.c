@@ -47,22 +47,13 @@ xQueueHandle QShedLoad;
 xQueueHandle QAddLoad;
 xQueueHandle QAddedShed;
 xQueueHandle QAddedLoad;
-xQueueHandle Q_keyboard;
+xQueueHandle QKeyboard;
 xQueueHandle QStability;
 /* Timers*/
 TimerHandle_t timer500;
 void vTimer500_Callback(xTimerHandle t_timer);
 
 /* Globals variables */
-TickType_t startTime = 0;
-TickType_t endTime = 0;
-int responseTimeFlag = 0;
-int topFiveRecords[5] = {0,0,0,0,0};
-int maxTime = 0;
-int minTime = 10;
-int avgTime = 0;
-int sumTime = 0;
-int count = 0;
 
 typedef enum
 {
@@ -88,6 +79,13 @@ typedef struct
 	unsigned int freq;
 	unsigned int stability;
 } sVGAData;
+
+TickType_t startTime = 0;
+TickType_t endTime = 0;
+int iRecentFiveRec[5] = {0,0,0,0,0};
+int maxTime = 0;
+int minTime = 10;
+int avgTime = 0;
 
 int iMode = normal;
 int iTimerFlag = 0;
@@ -131,23 +129,26 @@ FILE *lcd;
 #define CLEAR_LCD_STRING "[2J"
 
 /* VGA Display */
+/* VGA Display */
 void PRVGADraw_Task(void *pvParameters){
-	//initialize VGA controllers
+	/* Initialize VGA controllers */
 	alt_up_pixel_buffer_dma_dev *pixel_buf;
 	pixel_buf = alt_up_pixel_buffer_dma_open_dev(VIDEO_PIXEL_BUFFER_DMA_NAME);
-	if(pixel_buf == NULL){
+	if(pixel_buf == NULL)
+	{
 		printf("can't find pixel buffer device\n");
 	}
 	alt_up_pixel_buffer_dma_clear_screen(pixel_buf, 0);
 
 	alt_up_char_buffer_dev *char_buf;
 	char_buf = alt_up_char_buffer_open_dev("/dev/video_character_buffer_with_dma");
-	if(char_buf == NULL){
+	if(char_buf == NULL)
+	{
 		printf("can't find char buffer device\n");
 	}
 	alt_up_char_buffer_clear(char_buf);
 
-	//Set up plot axes
+	/* Set up plot axes */
 	alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 100, 590, 200, ((0x3ff << 20) + (0x3ff << 10) + (0x3ff)), 0);
 	alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 100, 590, 300, ((0x3ff << 20) + (0x3ff << 10) + (0x3ff)), 0);
 	alt_up_pixel_buffer_dma_draw_vline(pixel_buf, 100, 50, 200, ((0x3ff << 20) + (0x3ff << 10) + (0x3ff)), 0);
@@ -166,66 +167,92 @@ void PRVGADraw_Task(void *pvParameters){
 	alt_up_char_buffer_string(char_buf, "-30", 9, 34);
 	alt_up_char_buffer_string(char_buf, "-60", 9, 36);
 
-	// prints current threshold on VGA display - col, row
+	/* Prints current threshold on VGA display - col, row */
+	alt_up_char_buffer_string(char_buf, "723 Assignment 1 - Group 10", 4, 0);
+	alt_up_char_buffer_string(char_buf, "Kyung Ho Chun & Yunseung Lee", 4, 2);
+
+	alt_up_char_buffer_string(char_buf, "System Active Time (ms):", 42, 2);
+
 	alt_up_char_buffer_string(char_buf, "Frequency Threshold(Hz):", 4, 40);
 	alt_up_char_buffer_string(char_buf, "RoC Threshold(Hz):", 4, 43);
 	alt_up_char_buffer_string(char_buf, "Stability:", 4, 49);
-	alt_up_char_buffer_string(char_buf, "System Active Time:", 0, 0);
-	alt_up_char_buffer_string(char_buf, "Maximum Time:", 50, 40);
-	alt_up_char_buffer_string(char_buf, "Minimum Time:", 50, 43);
-	alt_up_char_buffer_string(char_buf, "Average Time:", 50, 46);
-	alt_up_char_buffer_string(char_buf, "Recent Records (Most to Least):", 4, 52);
+	alt_up_char_buffer_string(char_buf, "Mode:", 4, 46);
 
-	char freqThresStr[10];
-	char rocThresStr[10];
-	char timeStr[10];
+	alt_up_char_buffer_string(char_buf, "Maximum time (ms):", 49, 40);
+	alt_up_char_buffer_string(char_buf, "Minimum time (ms):", 49, 43);
+	alt_up_char_buffer_string(char_buf, "Average time (ms):", 49, 46);
+	alt_up_char_buffer_string(char_buf, "5 Recent response times (Left is most recent) in ms:", 4, 52);
+
 	int iVgaStable;
-	char maxStr[10];
-	char minStr[10];
-	char avgStr[10];
-	char recentRecord1[10];
-	char recentRecord2[10];
-	char recentRecord3[10];
-	char recentRecord4[10];
-	char recentRecord5[10];
+	double dSystemTime;
+	char cFreqThresStr[4] = "";
+	char cRocThresStr[4] = "";
+	char cTimeStr[10] = "";
+	char cMaxStr[4] = "";
+	char cMinStr[4] = "";
+	char cAvgStr[4] = "";
+	char cRecentRecord1[6] = "";
+	char cRecentRecord2[6] = "";
+	char cRecentRecord3[6] = "";
+	char cRecentRecord4[6] = "";
+	char cRecentRecord5[6] = "";
 
 	double freq[100], dfreq[100];
 	int i = 99, j = 0;
 	Line line_freq, line_roc;
 
-	while(1){
-		sprintf(freqThresStr, "%.2f", dThresFreq);
-		alt_up_char_buffer_string(char_buf, freqThresStr, 30, 40);
-		sprintf(rocThresStr, "%.2f", dThresRoc);
-		alt_up_char_buffer_string(char_buf, rocThresStr, 25, 43);
+	while(1)
+	{
+		/* Display frequency and ROC thresholds */
+		sprintf(cFreqThresStr, "%.2f", dThresFreq);
+		alt_up_char_buffer_string(char_buf, cFreqThresStr, 30, 40);
+		sprintf(cRocThresStr, "%.2f", dThresRoc);
+		alt_up_char_buffer_string(char_buf, cRocThresStr, 25, 43);
 
-		sprintf(maxStr, "%u", maxTime);
-		alt_up_char_buffer_string(char_buf, maxStr, 65, 40);
-		sprintf(minStr, "%u", minTime);
-		alt_up_char_buffer_string(char_buf, minStr, 65, 43);
-		sprintf(avgStr, "%u", avgTime);
-		alt_up_char_buffer_string(char_buf, avgStr, 65, 46);
+		/* System Time */
+		dSystemTime = xTaskGetTickCount() / 1000.0;
+		sprintf(cTimeStr, "%.2f", dSystemTime);
+		alt_up_char_buffer_string(char_buf, cTimeStr, 70, 2);
 
-		sprintf(recentRecord5, "%d", topFiveRecords[0]);
-		alt_up_char_buffer_string(char_buf, maxStr, 4, 54);
-		sprintf(recentRecord4, "%d", topFiveRecords[1]);
-		alt_up_char_buffer_string(char_buf, maxStr, 6, 53);
-		sprintf(recentRecord3, "%d", topFiveRecords[2]);
-		alt_up_char_buffer_string(char_buf, maxStr, 8, 53);
-		sprintf(recentRecord2, "%d", topFiveRecords[3]);
-		alt_up_char_buffer_string(char_buf, maxStr, 10, 53);
-		sprintf(recentRecord1, "%d", topFiveRecords[4]);
-		alt_up_char_buffer_string(char_buf, maxStr, 121, 53);
+		/* Display max, average and min response times */
+		sprintf(cMaxStr, "%u", maxTime);
+		alt_up_char_buffer_string(char_buf, cMaxStr, 69, 40);
+		sprintf(cMinStr, "%u", minTime);
+		alt_up_char_buffer_string(char_buf, cMinStr, 69, 43);
+		sprintf(cAvgStr, "%u", avgTime);
+		alt_up_char_buffer_string(char_buf, cAvgStr, 69, 46);
+
+		/* Display the 5 most recent response times */
+		sprintf(cRecentRecord5, "%d  ", iRecentFiveRec[5]);
+		alt_up_char_buffer_string(char_buf, cRecentRecord5, 4, 54);
+		sprintf(cRecentRecord4, "%d  ", iRecentFiveRec[4]);
+		alt_up_char_buffer_string(char_buf, cRecentRecord4, 7, 54);
+		sprintf(cRecentRecord3, "%d  ", iRecentFiveRec[3]);
+		alt_up_char_buffer_string(char_buf, cRecentRecord3, 10, 54);
+		sprintf(cRecentRecord2, "%d  ", iRecentFiveRec[2]);
+		alt_up_char_buffer_string(char_buf, cRecentRecord2, 13, 54);
+		sprintf(cRecentRecord1, "%d  ", iRecentFiveRec[1]);
+		alt_up_char_buffer_string(char_buf, cRecentRecord1, 16, 54);
 
 
-		double time = xTaskGetTickCount() / 1000.0;
-		sprintf(timeStr, "%.2f", time);
-		alt_up_char_buffer_string(char_buf, timeStr, 20, 0);
+		/* Display the current mode of the system */
+		if(iMode == 0)
+		{
+			alt_up_char_buffer_string(char_buf, "Normal      ", 11, 46);
+		}
+		else
+		{
+			alt_up_char_buffer_string(char_buf, "Maintenance", 11, 46);
+		}
 
-		if(uxQueueMessagesWaiting(QStability) != 0){
+
+		/* Receive the stability status of the system */
+		if(uxQueueMessagesWaiting(QStability) != 0)
+		{
 			xQueueReceive(QStability,  (void *) &iVgaStable, portMAX_DELAY);
 
-			if (iVgaStable == 0){
+			if (iVgaStable == 0)
+			{
 				alt_up_char_buffer_string(char_buf, "Unstable", 15, 49);
 			}
 			else
@@ -234,9 +261,9 @@ void PRVGADraw_Task(void *pvParameters){
 			}
 		}
 
-
-		//receive frequency data from queue
-		while(uxQueueMessagesWaiting(QFreqDataVGA) != 0){
+		/* Receive frequency data from queue */
+		while(uxQueueMessagesWaiting(QFreqDataVGA) != 0)
+		{
 			xQueueReceive(QFreqDataVGA, freq+i, 0);
 
 			//calculate frequency RoC
@@ -263,7 +290,8 @@ void PRVGADraw_Task(void *pvParameters){
 		alt_up_pixel_buffer_dma_draw_box(pixel_buf, 101, 201, 639, 299, 0, 0);
 
 		for(j=0;j<99;++j){ //i here points to the oldest data, j loops through all the data to be drawn on VGA
-			if (((int)(freq[(i+j)%100]) > MIN_FREQ) && ((int)(freq[(i+j+1)%100]) > MIN_FREQ)){
+			if (((int)(freq[(i+j)%100]) > MIN_FREQ) && ((int)(freq[(i+j+1)%100]) > MIN_FREQ))
+			{
 				//Calculate coordinates of the two data points to draw a line in between
 				//Frequency plot
 				line_freq.x1 = FREQPLT_ORI_X + FREQPLT_GRID_SIZE_X * j;
@@ -315,11 +343,13 @@ void vISRKeyboard(void* context, alt_u32 id)
 	/* If keyboard press has been read */
 	if (!iStatus)
 	{
-		if (cKey == 0x5A){
+		if (cKey == 0x5A)
+		{
 			cAscii = 0x0D;
 		}
-		if (decode_mode != KB_LONG_BINARY_MAKE_CODE && decode_mode != KB_BREAK_CODE){
-			xQueueSendFromISR(Q_keyboard, &cAscii, 0);
+		if (decode_mode != KB_LONG_BINARY_MAKE_CODE && decode_mode != KB_BREAK_CODE)
+		{
+			xQueueSendFromISR(QKeyboard, &cAscii, 0);
 		}
 	}
 }
@@ -330,7 +360,6 @@ void vTaskLCDMode(void *pvParameters)
 	int iBtn;
 	lcd = fopen(CHARACTER_LCD_NAME, "w");
 	fprintf (lcd, "NORMAL MODE\n");
-	printf("iMode: %d\n", iMode);
 	fclose(lcd);
 
 	while (1)
@@ -338,6 +367,7 @@ void vTaskLCDMode(void *pvParameters)
 		if (xQueueReceiveFromISR(QBtn, &iBtn, portMAX_DELAY) == pdTRUE)
 		{
 			iMode = !iMode;
+
 			lcd = fopen(CHARACTER_LCD_NAME, "w");
 			if (lcd != NULL)
 			{
@@ -345,11 +375,10 @@ void vTaskLCDMode(void *pvParameters)
 
 				if (iMode)
 				{
-					printf("maint mode\n");
 					fprintf (lcd, "MAINTENANCE MODE\n");
-				} else
+				}
+				else
 				{
-					printf("normal mode\n");
 					fprintf(lcd, "NORMAL MODE\n");
 				}
 			}
@@ -368,42 +397,43 @@ void vTaskKeyboardHandler (void * pvParameters)
 	int i = 0;
 
 	while (1){
-		while(uxQueueMessagesWaitingFromISR(Q_keyboard) != 0){
-			xQueueReceiveFromISR(Q_keyboard, (void*) &cKeyInput, 0);
-			printf("print: %d \n", cKeyInput-0x30);
+		if(uxQueueMessagesWaitingFromISR(QKeyboard) != 0)
+		{
+			xQueueReceiveFromISR(QKeyboard, (void*) &cKeyInput, 0);
 
-			/*check if the input number is valid*/
-			if (cKeyInput >= 0x30 && cKeyInput <=0x39){
+			/* Check if the input number is valid */
+			if (cKeyInput >= 0x30 && cKeyInput <=0x39)
+			{
 				val = cKeyInput-0x30;
 				inputs[i] = inputs[i]*10 + val;
 			}
 
-			/* check the keyboard input is comma*/
+			/* Check the keyboard input is comma */
 			else if (cKeyInput == 0x2C)
 			{
 				i++;
-				if (i >= 2){
-					xSemaphoreTake(semRoc, portMAX_DELAY);
+				if (i >= 2)
+				{
+					//xSemaphoreTake(semThres, portMAX_DELAY);
 					dThresFreq = inputs[0];
 					dThresRoc = inputs[1];
+					//xSemaphoreGive(semThres);
 					inputs[0] = 0;
 					inputs[1] = 0;
 					i = 0;
-					printf("New Value: %f,  %f\n", dThresFreq, dThresRoc);
-					xSemaphoreGive(semRoc);
 
 				}
 			}
-			/* check if the keyboard input is enter*/
-			else if (cKeyInput == 0x0D){
-				xSemaphoreTake(semRoc, portMAX_DELAY);
+			/* Check if the keyboard input is enter */
+			else if (cKeyInput == 0x0D)
+			{
+				//xSemaphoreTake(semThres, portMAX_DELAY);
 				dThresFreq = inputs[0];
 				dThresRoc = inputs[1];
+				//xSemaphoreGive(semThres);
 				inputs[0] = 0;
 				inputs[1] = 0;
 				i = 0;
-				printf("New Value: %f,  %f\n", dThresFreq, dThresRoc);
-				xSemaphoreGive(semRoc);
 			}
 		}
 		vTaskDelay(5);
@@ -424,7 +454,8 @@ void vISRFreqRelay(void* context, alt_u32 id)
 void vTaskSwitchCon(void *pvParameters)
 {
 	unsigned int iCurrentLoad;
-	while(1){
+	while(1)
+	{
 		iCurrentLoad = IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE) & 0x1F; //read slide switches
 		xQueueSend(QSwitch, &iCurrentLoad, portMAX_DELAY);
 		vTaskDelay(5);
@@ -439,7 +470,13 @@ void vTaskLoadManager(void * pvParameters)
 	int iFlagAdd = 0;
 	int iTimerActive = 0;
 	int iManagingLoad = 0;
+	int iRespTimeFlag = 0;
+
+	int iSumTime = 0;
+	int iRespCount = 0;
+
 	unsigned int iCurrentLoad;
+	int timeDiff = 0;
 
 	double dInFreq;
 	double dFreqPrev = 50.0;
@@ -461,21 +498,17 @@ void vTaskLoadManager(void * pvParameters)
 	{
 		if(xQueueReceiveFromISR(QFreqData, &dInFreq, portMAX_DELAY) == pdTRUE)
 		{
-			xSemaphoreTake(semRoc, portMAX_DELAY);
-
-			//Calculate Rate of Change Value
 			dRocVal = ((dInFreq-dFreqPrev)* SAMPLING_FREQ) / (double) IORD(FREQUENCY_ANALYSER_BASE, 0);
 			dFreqPrev = dInFreq;
-			xSemaphoreGive(semRoc);
+
 
 			if(dInFreq < dThresFreq || fabs(dRocVal) > dThresRoc)
 			{
 				iStable = 0;
-				if(responseTimeFlag == 0)
+				if(iRespTimeFlag == 0)
 				{
 					startTime = xTaskGetTickCount();
-					printf("time taken: %u\n", startTime);
-					responseTimeFlag = 1;
+					iRespTimeFlag = 1;
 				}
 			}
 			else
@@ -483,14 +516,17 @@ void vTaskLoadManager(void * pvParameters)
 				iStable = 1;
 			}
 
-			if(xQueueReceive(QSwitch, &iCurrentLoad, 0) == pdTRUE)
+			if(xQueueReceive(QSwitch, &iCurrentLoad, 0) == pdTRUE && iManagingLoad)
 			{
-				sLoadStat.iCurrentLoad = iCurrentLoad;
+				sLoadStat.iCurrentLoad &= iCurrentLoad;
 				sLoadStat.iSheddedLoad &= iCurrentLoad;
 				sLoadStat.iUnSheddedLoad &= iCurrentLoad;
 				sHandledLoadStat.iSheddedLoad &= iCurrentLoad;
 				sHandledLoadStat.iUnSheddedLoad &= iCurrentLoad;
 
+			}else{
+				sLoadStat.iCurrentLoad = iCurrentLoad;
+				sLoadStat.iUnSheddedLoad = iCurrentLoad;
 			}
 
 			xQueueSend(QStability, &iStable, 0);
@@ -548,68 +584,81 @@ void vTaskLoadManager(void * pvParameters)
 					}
 				}
 
-				if(iTimerActive){
+				if(iTimerActive)
+				{
 					iTimerActive = 0;
-					if (xTimerStart(timer500, 10) != pdPASS){
+					if (xTimerStart(timer500, 10) != pdPASS)
+					{
 						printf("Cannot start 500ms timer\n");
 					}
 				}
 
-				if(iFlagShed){
+				if(iFlagShed)
+				{
 					xQueueSend(QShedLoad, &sLoadStat, portMAX_DELAY);
-					if (!iManagingLoad){
+					if (!iManagingLoad)
+					{
 						iManagingLoad = 1;
 					}
 				}
-				else if(iFlagAdd){
+				else if(iFlagAdd)
+				{
 					xQueueSend(QAddLoad, &sLoadStat, portMAX_DELAY);
-					if (sHandledLoadStat.iUnSheddedLoad == 0){
-						iManagingLoad = 0;
-					}
 				}
 			}
-			else{
+			else
+			{
+				if(iRespTimeFlag){
+					iRespTimeFlag = 0;
+				}
 				sLoadStat.iSheddedLoad = 0;
 				sLoadStat.iUnSheddedLoad = 0;
 				sHandledLoadStat.iSheddedLoad = 0;
 				sHandledLoadStat.iUnSheddedLoad = 0;
 			}
 
-			if (xQueueReceive(QAddedShed, &sHandledLoadStat, 0) == pdTRUE && iFlagShed){
+			if (xQueueReceive(QAddedShed, &sHandledLoadStat, 0) == pdTRUE && iFlagShed)
+			{
 
 				iFlagShed = 0;
 				sLoadStat.iSheddedLoad = sHandledLoadStat.iSheddedLoad;
 				sLoadStat.iUnSheddedLoad = sHandledLoadStat.iUnSheddedLoad;
 
-				if (responseTimeFlag == 1){
+				if (iRespTimeFlag == 1)
+				{
 					endTime = xTaskGetTickCount();
-					responseTimeFlag = 0;
-					unsigned int timeDifference = endTime - startTime;
+					iRespTimeFlag = 0;
+					timeDiff = endTime - startTime;
 
-					for (int i = 0; i < 4; i++){
-						topFiveRecords[i] = topFiveRecords [i+1];
+					for (int i = 0; i < 4; i++)
+					{
+						iRecentFiveRec[i] = iRecentFiveRec [i+1];
 					}
-					topFiveRecords[4] = timeDifference;
+					iRecentFiveRec[4] = timeDiff;
 
-					// Calculate Max, Min and Average
-					if (timeDifference > maxTime){
-						maxTime = timeDifference;
-						printf("maxTime: %d\n", maxTime);
+					//xSemaphoreTake(semResp,portMAX_DELAY);
+					/* Calculate Max, Min and Average */
+					if (timeDiff > maxTime)
+					{
+						maxTime = timeDiff;
 					}
-
-					else if (timeDifference < minTime){
-						minTime = timeDifference;
-						printf("minTime: %d\n", minTime);
+					else if (timeDiff < minTime)
+					{
+						minTime = timeDiff;
 					}
+					//xSemaphoreGive(semResp);
 
-					count = count + 1;
-					sumTime = sumTime + timeDifference;
-					avgTime = sumTime / count;
-
-					printf("avgTime: %d\n", avgTime);
+					iRespCount += 1;
+					iSumTime += timeDiff;
+					avgTime = iSumTime / iRespCount;
 				}
 			}
-			else if (xQueueReceive(QAddedLoad, &sHandledLoadStat, 0) == pdTRUE && iFlagAdd){
+			else if (xQueueReceive(QAddedLoad, &sHandledLoadStat, 0) == pdTRUE && iFlagAdd)
+			{
+				if (sHandledLoadStat.iSheddedLoad == 0)
+				{
+					iManagingLoad = 0;
+				}
 				iFlagAdd = 0;
 				sLoadStat.iSheddedLoad = sHandledLoadStat.iSheddedLoad;
 				sLoadStat.iUnSheddedLoad = sHandledLoadStat.iUnSheddedLoad;
@@ -630,28 +679,34 @@ void vTaskShed(void *pvParameters)
 
 	while(1)
 	{
-		if(uxQueueMessagesWaiting(QShedLoad) != 0){
+		if(uxQueueMessagesWaiting(QShedLoad) != 0)
+		{
 			xQueueReceive(QShedLoad,  (void *) &sLoadStat, portMAX_DELAY);
 
-			if((sLoadStat.iCurrentLoad & 0x01) == 0x01 && (sLoadStat.iSheddedLoad & 0x01) != 0x01){
+			if((sLoadStat.iCurrentLoad & 0x01) == 0x01 && (sLoadStat.iSheddedLoad & 0x01) != 0x01)
+			{
 				sLoadStat.iSheddedLoad |= 0x01;
 				sLoadStat.iUnSheddedLoad &= ~01;
 			}
-			else if((sLoadStat.iCurrentLoad & 0x02) == 0x02 && (sLoadStat.iSheddedLoad & 0x02) != 0x02){
+			else if((sLoadStat.iCurrentLoad & 0x02) == 0x02 && (sLoadStat.iSheddedLoad & 0x02) != 0x02)
+			{
 				sLoadStat.iSheddedLoad |= 0x02;
 				sLoadStat.iUnSheddedLoad &= ~0x02;
 			}
-			else if((sLoadStat.iCurrentLoad & 0x04) == 0x04 && (sLoadStat.iSheddedLoad & 0x04) != 0x04){
+			else if((sLoadStat.iCurrentLoad & 0x04) == 0x04 && (sLoadStat.iSheddedLoad & 0x04) != 0x04)
+			{
 				sLoadStat.iSheddedLoad |= 0x04;
 				sLoadStat.iUnSheddedLoad &= ~0x04;
 			}
-			else if((sLoadStat.iCurrentLoad & 0x08) == 0x08 && (sLoadStat.iSheddedLoad & 0x08) != 0x08){
+			else if((sLoadStat.iCurrentLoad & 0x08) == 0x08 && (sLoadStat.iSheddedLoad & 0x08) != 0x08)
+			{
 				sLoadStat.iSheddedLoad |= 0x08;
 				sLoadStat.iUnSheddedLoad &= ~0x08;
 			}
-			else if((sLoadStat.iCurrentLoad & 0x16) == 0x16 && (sLoadStat.iSheddedLoad & 0x16) != 0x16){
-				sLoadStat.iSheddedLoad |= 0x16;
-				sLoadStat.iUnSheddedLoad &= ~0x16;
+			else if((sLoadStat.iCurrentLoad & 0x10) == 0x10 && (sLoadStat.iSheddedLoad & 0x10) != 0x10)
+			{
+				sLoadStat.iSheddedLoad |= 0x10;
+				sLoadStat.iUnSheddedLoad &= ~0x10;
 			}
 
 			sHandledLoadStat.iSheddedLoad = sLoadStat.iSheddedLoad;
@@ -674,32 +729,33 @@ void vTaskAdd(void *pvParameters)
 	{
 		if(uxQueueMessagesWaiting(QAddLoad) != 0){
 			xQueueReceive(QAddLoad, (void *) &sLoadStat, portMAX_DELAY);
-//			printf("b Add iSheddedLoad: %d\n",sHandledLoadStat.iSheddedLoad);
-//			printf("b Add iUnSheddedLoad: %d\n",sHandledLoadStat.iUnSheddedLoad);
 
-			if((sLoadStat.iCurrentLoad & 0x16) == 0x16 && (sLoadStat.iSheddedLoad & 0x16) == 0x16){
-				sLoadStat.iSheddedLoad &= ~0x16;
-				sLoadStat.iUnSheddedLoad |= 0x16;
+			if((sLoadStat.iCurrentLoad & 0x10) == 0x10 && (sLoadStat.iSheddedLoad & 0x10) == 0x10)
+			{
+				sLoadStat.iSheddedLoad &= ~0x10;
+				sLoadStat.iUnSheddedLoad |= 0x10;
+
 			}
-			else if((sLoadStat.iCurrentLoad & 0x08) == 0x08 && (sLoadStat.iSheddedLoad & 0x08) == 0x08){
+			else if((sLoadStat.iCurrentLoad & 0x08) == 0x08 && (sLoadStat.iSheddedLoad & 0x08) == 0x08)
+			{
 				sLoadStat.iSheddedLoad &= ~0x08;
 				sLoadStat.iUnSheddedLoad |= 0x08;
 			}
-			else if((sLoadStat.iCurrentLoad & 0x04) == 0x04 && (sLoadStat.iSheddedLoad & 0x04) == 0x04){
+			else if((sLoadStat.iCurrentLoad & 0x04) == 0x04 && (sLoadStat.iSheddedLoad & 0x04) == 0x04)
+			{
 				sLoadStat.iSheddedLoad &= ~0x04;
 				sLoadStat.iUnSheddedLoad |= 0x04;
 			}
-			else if((sLoadStat.iCurrentLoad & 0x02) == 0x02 && (sLoadStat.iSheddedLoad & 0x02) == 0x02){
+			else if((sLoadStat.iCurrentLoad & 0x02) == 0x02 && (sLoadStat.iSheddedLoad & 0x02) == 0x02)
+			{
 				sLoadStat.iSheddedLoad &= ~0x02;
 				sLoadStat.iUnSheddedLoad |= 0x02;
 			}
-			else if((sLoadStat.iCurrentLoad & 0x01) == 0x01 && (sLoadStat.iSheddedLoad & 0x01) == 0x01){
+			else if((sLoadStat.iCurrentLoad & 0x01) == 0x01 && (sLoadStat.iSheddedLoad & 0x01) == 0x01)
+			{
 				sLoadStat.iSheddedLoad &= ~0x01;
 				sLoadStat.iUnSheddedLoad |= 0x01;
 			}
-
-//			printf("a Add iSheddedLoad: %d\n",sHandledLoadStat.iSheddedLoad);
-//			printf("a Add iUnSheddedLoad: %d\n",sHandledLoadStat.iUnSheddedLoad);
 
 			sHandledLoadStat.iSheddedLoad = sLoadStat.iSheddedLoad;
 			sHandledLoadStat.iUnSheddedLoad = sLoadStat.iUnSheddedLoad;
@@ -711,19 +767,17 @@ void vTaskAdd(void *pvParameters)
 	return;
 }
 
-/* Timer functions*/
+/* Timer function*/
 void vTimer500_Callback(xTimerHandle t_timer)
 {
-	//xSemaphoreTake(timer_sem, portMAX_DELAY);
 	iTimerFlag = 0;
 	iTimerFin = 1;
-	xSemaphoreGiveFromISR(semTimer, pdTRUE);
 	return;
 }
 
-void main(int argc, char* argv[], char* envp[])
+int main(int argc, char* argv[], char* envp[])
 {
-	/* Keyboard set up */
+	/* Keyboard setup */
 	alt_up_ps2_dev * ps2_device = alt_up_ps2_open_dev(PS2_NAME);
 
 	if(ps2_device == NULL){
@@ -761,7 +815,7 @@ void main(int argc, char* argv[], char* envp[])
 	vTaskStartScheduler();
 
 	for(;;);
-	return;
+	return 0;
 }
 
 /* This function creates queues and semaphores */
@@ -772,20 +826,21 @@ void initOSDataStructs(void)
 	semTimer = xSemaphoreCreateMutex();
 
 	/* Create Queues */
-	QFreqData = xQueueCreate( 20, sizeof( double ) );
-	QFreqDataVGA = xQueueCreate( 20, sizeof( double ) );
-	QShedLoad = xQueueCreate( 1, sizeof( sLoadStat ) );
-	QAddLoad = xQueueCreate( 1, sizeof( sLoadStat ) );
-	QAddedLoad = xQueueCreate( 1, sizeof( sHandledLoadStat ) );
-	QAddedShed = xQueueCreate( 1, sizeof( sHandledLoadStat ) );
+	QFreqData = xQueueCreate(20, sizeof(double));
+	QFreqDataVGA = xQueueCreate(20, sizeof(double));
 
-	QNetworkStat = xQueueCreate( 10, sizeof( int ) );
-	QSwitch = xQueueCreate( 10, sizeof( unsigned int ) );
-	QBtn = xQueueCreate(100, sizeof(int));
+	QShedLoad = xQueueCreate(1, sizeof(sLoadStat));
+	QAddLoad = xQueueCreate(1, sizeof(sLoadStat));
+	QAddedLoad = xQueueCreate(1, sizeof(sHandledLoadStat));
+	QAddedShed = xQueueCreate(1, sizeof(sHandledLoadStat));
 
-	QStability = xQueueCreate ( 1, sizeof (int) );
+	QNetworkStat = xQueueCreate(10, sizeof(int));
+	QSwitch = xQueueCreate(10, sizeof(unsigned int));
+	QBtn = xQueueCreate(10, sizeof(int));
 
-	Q_keyboard = xQueueCreate(10, sizeof (char));
+	QStability = xQueueCreate (1, sizeof (int));
+
+	QKeyboard = xQueueCreate(10, sizeof (char));
 
 	return;
 }
@@ -793,11 +848,13 @@ void initOSDataStructs(void)
 /* This function creates the tasks */
 void initCreateTasks(void)
 {
+	xTaskCreate(PRVGADraw_Task, "PR VGA Draw Task", configMINIMAL_STACK_SIZE, NULL, 6, NULL);
+
 	xTaskCreate(vTaskAdd, "Add Task", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
 	xTaskCreate(vTaskShed, "Shed Task", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
 	xTaskCreate(vTaskLoadManager, "Load Manager Task", configMINIMAL_STACK_SIZE, NULL, 5, NULL);
+
 	xTaskCreate(vTaskSwitchCon, "Switch Controller Task", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
-	xTaskCreate(PRVGADraw_Task, "PR VGA Draw Task", configMINIMAL_STACK_SIZE, NULL, 6, NULL);
 	xTaskCreate(vTaskLCDMode, "LCD Mode Task", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
 	xTaskCreate(vTaskKeyboardHandler, "Keyboard Handler Task", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
 
