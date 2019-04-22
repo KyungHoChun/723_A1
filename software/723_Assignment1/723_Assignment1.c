@@ -33,9 +33,9 @@
 TaskHandle_t xHandle;
 
 /* Definition of Semaphore */
-SemaphoreHandle_t semAdd;
-SemaphoreHandle_t semRoc;
+SemaphoreHandle_t semThres;
 SemaphoreHandle_t semTimer;
+SemaphoreHandle_t semResp;
 
 /* Queue Definitions */
 xQueueHandle QFreqData;
@@ -49,12 +49,12 @@ xQueueHandle QAddedShed;
 xQueueHandle QAddedLoad;
 xQueueHandle QKeyboard;
 xQueueHandle QStability;
+
 /* Timers*/
 TimerHandle_t timer500;
 void vTimer500_Callback(xTimerHandle t_timer);
 
 /* Globals variables */
-
 typedef enum
 {
 	normal = 0,
@@ -80,12 +80,10 @@ typedef struct
 	unsigned int stability;
 } sVGAData;
 
-TickType_t startTime = 0;
-TickType_t endTime = 0;
 int iRecentFiveRec[5] = {0,0,0,0,0};
-int maxTime = 0;
-int minTime = 10;
-int avgTime = 0;
+int iMaxTime = 0;
+int iMinTime = 10;
+int iAvgTime = 0;
 
 int iMode = normal;
 int iTimerFlag = 0;
@@ -129,11 +127,11 @@ FILE *lcd;
 #define CLEAR_LCD_STRING "[2J"
 
 /* VGA Display */
-/* VGA Display */
 void PRVGADraw_Task(void *pvParameters){
 	/* Initialize VGA controllers */
 	alt_up_pixel_buffer_dma_dev *pixel_buf;
 	pixel_buf = alt_up_pixel_buffer_dma_open_dev(VIDEO_PIXEL_BUFFER_DMA_NAME);
+
 	if(pixel_buf == NULL)
 	{
 		printf("can't find pixel buffer device\n");
@@ -215,24 +213,24 @@ void PRVGADraw_Task(void *pvParameters){
 		alt_up_char_buffer_string(char_buf, cTimeStr, 70, 2);
 
 		/* Display max, average and min response times */
-		sprintf(cMaxStr, "%u", maxTime);
+		sprintf(cMaxStr, "%u  ", iMaxTime);
 		alt_up_char_buffer_string(char_buf, cMaxStr, 69, 40);
-		sprintf(cMinStr, "%u", minTime);
+		sprintf(cMinStr, "%u  ", iMinTime);
 		alt_up_char_buffer_string(char_buf, cMinStr, 69, 43);
-		sprintf(cAvgStr, "%u", avgTime);
+		sprintf(cAvgStr, "%u  ", iAvgTime);
 		alt_up_char_buffer_string(char_buf, cAvgStr, 69, 46);
 
 		/* Display the 5 most recent response times */
-		sprintf(cRecentRecord5, "%d  ", iRecentFiveRec[5]);
+		sprintf(cRecentRecord5, "%d  ", iRecentFiveRec[4]);
 		alt_up_char_buffer_string(char_buf, cRecentRecord5, 4, 54);
-		sprintf(cRecentRecord4, "%d  ", iRecentFiveRec[4]);
-		alt_up_char_buffer_string(char_buf, cRecentRecord4, 7, 54);
-		sprintf(cRecentRecord3, "%d  ", iRecentFiveRec[3]);
-		alt_up_char_buffer_string(char_buf, cRecentRecord3, 10, 54);
-		sprintf(cRecentRecord2, "%d  ", iRecentFiveRec[2]);
-		alt_up_char_buffer_string(char_buf, cRecentRecord2, 13, 54);
-		sprintf(cRecentRecord1, "%d  ", iRecentFiveRec[1]);
-		alt_up_char_buffer_string(char_buf, cRecentRecord1, 16, 54);
+		sprintf(cRecentRecord4, "%d  ", iRecentFiveRec[3]);
+		alt_up_char_buffer_string(char_buf, cRecentRecord4, 9, 54);
+		sprintf(cRecentRecord3, "%d  ", iRecentFiveRec[2]);
+		alt_up_char_buffer_string(char_buf, cRecentRecord3, 14, 54);
+		sprintf(cRecentRecord2, "%d  ", iRecentFiveRec[1]);
+		alt_up_char_buffer_string(char_buf, cRecentRecord2, 19, 54);
+		sprintf(cRecentRecord1, "%d  ", iRecentFiveRec[0]);
+		alt_up_char_buffer_string(char_buf, cRecentRecord1, 24, 54);
 
 
 		/* Display the current mode of the system */
@@ -414,10 +412,10 @@ void vTaskKeyboardHandler (void * pvParameters)
 				i++;
 				if (i >= 2)
 				{
-					//xSemaphoreTake(semThres, portMAX_DELAY);
+					xSemaphoreTake(semThres, portMAX_DELAY);
 					dThresFreq = inputs[0];
 					dThresRoc = inputs[1];
-					//xSemaphoreGive(semThres);
+					xSemaphoreGive(semThres);
 					inputs[0] = 0;
 					inputs[1] = 0;
 					i = 0;
@@ -427,16 +425,16 @@ void vTaskKeyboardHandler (void * pvParameters)
 			/* Check if the keyboard input is enter */
 			else if (cKeyInput == 0x0D)
 			{
-				//xSemaphoreTake(semThres, portMAX_DELAY);
+				xSemaphoreTake(semThres, portMAX_DELAY);
 				dThresFreq = inputs[0];
 				dThresRoc = inputs[1];
-				//xSemaphoreGive(semThres);
+				xSemaphoreGive(semThres);
 				inputs[0] = 0;
 				inputs[1] = 0;
 				i = 0;
 			}
 		}
-		vTaskDelay(5);
+		vTaskDelay(2);
 	}
 	return;
 }
@@ -458,7 +456,7 @@ void vTaskSwitchCon(void *pvParameters)
 	{
 		iCurrentLoad = IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE) & 0x1F; //read slide switches
 		xQueueSend(QSwitch, &iCurrentLoad, portMAX_DELAY);
-		vTaskDelay(5);
+		vTaskDelay(2);
 	}
 }
 
@@ -471,12 +469,9 @@ void vTaskLoadManager(void * pvParameters)
 	int iTimerActive = 0;
 	int iManagingLoad = 0;
 	int iRespTimeFlag = 0;
-
-	int iSumTime = 0;
 	int iRespCount = 0;
 
 	unsigned int iCurrentLoad;
-	int timeDiff = 0;
 
 	double dInFreq;
 	double dFreqPrev = 50.0;
@@ -485,14 +480,13 @@ void vTaskLoadManager(void * pvParameters)
 	sLoadStat sLoadStat;
 	sHandledLoadStat sHandledLoadStat;
 
+	TickType_t tStartTime = 0;
+	TickType_t tEndTime = 0;
+	TickType_t tTimeDiff = 0;
+	TickType_t tSumTime = 0;
+
 	sLoadStat.iSheddedLoad = 0x00;
 	sLoadStat.iUnSheddedLoad = 0x00;
-
-	// If normal, add or remove loads
-	// If managing load
-	// block adding loads
-	// switching off loads is allowed
-	// Once load managing is finished add load
 
 	while(1)
 	{
@@ -501,13 +495,11 @@ void vTaskLoadManager(void * pvParameters)
 			dRocVal = ((dInFreq-dFreqPrev)* SAMPLING_FREQ) / (double) IORD(FREQUENCY_ANALYSER_BASE, 0);
 			dFreqPrev = dInFreq;
 
-
 			if(dInFreq < dThresFreq || fabs(dRocVal) > dThresRoc)
 			{
 				iStable = 0;
 				if(iRespTimeFlag == 0)
 				{
-					startTime = xTaskGetTickCount();
 					iRespTimeFlag = 1;
 				}
 			}
@@ -524,7 +516,8 @@ void vTaskLoadManager(void * pvParameters)
 				sHandledLoadStat.iSheddedLoad &= iCurrentLoad;
 				sHandledLoadStat.iUnSheddedLoad &= iCurrentLoad;
 
-			}else{
+			}else
+			{
 				sLoadStat.iCurrentLoad = iCurrentLoad;
 				sLoadStat.iUnSheddedLoad = iCurrentLoad;
 			}
@@ -532,55 +525,49 @@ void vTaskLoadManager(void * pvParameters)
 			xQueueSend(QStability, &iStable, 0);
 			xQueueSendToBack(QFreqDataVGA, &dInFreq, 0);
 
-			if(sLoadStat.iCurrentLoad != 0 && iMode == normal){
-				/*
-				SHED
-				If timer is not active and unstable - start timer - shed load
-				If timer is active (from stable) and has become unstable - reset timer - shed load
-
-				If timer has finished and unstable - reset timer - shed load
-				If timer has finished (from unstable) and has become stable - reset timer
-					If a load was shed - add load
-
-				ADD
-				If timer has finished (from unstable) and has become stable - reset timer
-					 If a load was shed - add load
-				 */
-
+			if(sLoadStat.iCurrentLoad != 0 && iMode == normal)
+			{
 				// If timer is active (from stable) and has become unstable - reset timer - shed load
-				if(iTimerFlag && !iTimerFin && !iStable){
+				if(iTimerFlag && !iTimerFin && !iStable && sLoadStat.iUnSheddedLoad > 0)
+				{
 					xSemaphoreTake(semTimer, portMAX_DELAY);
 					iTimerFlag = 1;
+					xSemaphoreGive(semTimer);
 					iFlagShed = 1;
 					iTimerActive = 1;
-					xSemaphoreGive(semTimer);
+					tStartTime = xTaskGetTickCount();
 				}
 				// If timer is not active and unstable - start timer - shed load
-				else if(!iTimerFlag && !iTimerFin && !iStable){
+				else if(!iTimerFlag && !iTimerFin && !iStable && sLoadStat.iUnSheddedLoad > 0)
+				{
 					xSemaphoreTake(semTimer, portMAX_DELAY);
 					iTimerFlag = 1;
+					xSemaphoreGive(semTimer);
 					iFlagShed = 1;
 					iTimerActive = 1;
-					xSemaphoreGive(semTimer);
+					tStartTime = xTaskGetTickCount();
 				}
 				// If timer has finished and unstable - reset timer - shed load
-				else if(!iTimerFlag && iTimerFin && !iStable){
+				else if(!iTimerFlag && iTimerFin && !iStable && sLoadStat.iUnSheddedLoad > 0)
+				{
 					xSemaphoreTake(semTimer, portMAX_DELAY);
 					iTimerFlag = 1;
-					iFlagShed = 1;
 					iTimerFin = 0;
-					iTimerActive = 1;
 					xSemaphoreGive(semTimer);
+					iFlagShed = 1;
+					iTimerActive = 1;
+					tStartTime = xTaskGetTickCount();
 				}
 				// If timer has finished (from unstable) and has become stable - reset timer
-				else if(!iTimerFlag && iTimerFin && iStable){
+				else if(!iTimerFlag && iTimerFin && iStable)
+				{
 					// if a load was shed - add load
 					if(sLoadStat.iSheddedLoad > 0){
 						xSemaphoreTake(semTimer, pdFALSE);
-						iFlagAdd = 1;
 						iTimerFin = 0;
-						iTimerActive = 1;
 						xSemaphoreGive(semTimer);
+						iTimerActive = 1;
+						iFlagAdd = 1;
 					}
 				}
 
@@ -593,22 +580,25 @@ void vTaskLoadManager(void * pvParameters)
 					}
 				}
 
-				if(iFlagShed)
+				if(iFlagShed == 1)
 				{
 					xQueueSend(QShedLoad, &sLoadStat, portMAX_DELAY);
 					if (!iManagingLoad)
 					{
 						iManagingLoad = 1;
 					}
+					iFlagShed = 2;
 				}
-				else if(iFlagAdd)
+				else if(iFlagAdd == 1)
 				{
+					iFlagAdd = 2;
 					xQueueSend(QAddLoad, &sLoadStat, portMAX_DELAY);
 				}
 			}
 			else
 			{
-				if(iRespTimeFlag){
+				if(iRespTimeFlag)
+				{
 					iRespTimeFlag = 0;
 				}
 				sLoadStat.iSheddedLoad = 0;
@@ -617,7 +607,7 @@ void vTaskLoadManager(void * pvParameters)
 				sHandledLoadStat.iUnSheddedLoad = 0;
 			}
 
-			if (xQueueReceive(QAddedShed, &sHandledLoadStat, 0) == pdTRUE && iFlagShed)
+			if (xQueueReceive(QAddedShed, &sHandledLoadStat, 0) == pdTRUE && iFlagShed == 2)
 			{
 
 				iFlagShed = 0;
@@ -626,34 +616,35 @@ void vTaskLoadManager(void * pvParameters)
 
 				if (iRespTimeFlag == 1)
 				{
-					endTime = xTaskGetTickCount();
+					tEndTime = xTaskGetTickCount();
 					iRespTimeFlag = 0;
-					timeDiff = endTime - startTime;
+					tTimeDiff = tEndTime - tStartTime;
 
+					xSemaphoreTake(semResp,portMAX_DELAY);
 					for (int i = 0; i < 4; i++)
 					{
 						iRecentFiveRec[i] = iRecentFiveRec [i+1];
 					}
-					iRecentFiveRec[4] = timeDiff;
 
-					//xSemaphoreTake(semResp,portMAX_DELAY);
+					iRecentFiveRec[4] = tTimeDiff;
+
 					/* Calculate Max, Min and Average */
-					if (timeDiff > maxTime)
+					if (tTimeDiff > iMaxTime)
 					{
-						maxTime = timeDiff;
+						iMaxTime = tTimeDiff;
 					}
-					else if (timeDiff < minTime)
+					else if (tTimeDiff < iMinTime)
 					{
-						minTime = timeDiff;
+						iMinTime = tTimeDiff;
 					}
-					//xSemaphoreGive(semResp);
+					xSemaphoreGive(semResp);
 
 					iRespCount += 1;
-					iSumTime += timeDiff;
-					avgTime = iSumTime / iRespCount;
+					tSumTime += tTimeDiff;
+					iAvgTime = tSumTime / iRespCount;
 				}
 			}
-			else if (xQueueReceive(QAddedLoad, &sHandledLoadStat, 0) == pdTRUE && iFlagAdd)
+			else if (xQueueReceive(QAddedLoad, &sHandledLoadStat, 0) == pdTRUE && iFlagAdd == 2)
 			{
 				if (sHandledLoadStat.iSheddedLoad == 0)
 				{
@@ -667,7 +658,7 @@ void vTaskLoadManager(void * pvParameters)
 			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, sLoadStat.iSheddedLoad & 0x1F);
 			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, (sLoadStat.iSheddedLoad ^ sLoadStat.iCurrentLoad) & 0x1F);
 		}
-		vTaskDelay(5);
+		vTaskDelay(2);
 	}
 }
 
@@ -681,7 +672,7 @@ void vTaskShed(void *pvParameters)
 	{
 		if(uxQueueMessagesWaiting(QShedLoad) != 0)
 		{
-			xQueueReceive(QShedLoad,  (void *) &sLoadStat, portMAX_DELAY);
+			xQueueReceive(QShedLoad, (void *) &sLoadStat, portMAX_DELAY);
 
 			if((sLoadStat.iCurrentLoad & 0x01) == 0x01 && (sLoadStat.iSheddedLoad & 0x01) != 0x01)
 			{
@@ -714,7 +705,7 @@ void vTaskShed(void *pvParameters)
 
 			xQueueSend(QAddedShed, (void*)&sHandledLoadStat, portMAX_DELAY);
 		}
-		vTaskDelay(5);
+		vTaskDelay(2);
 	}
 	return;
 }
@@ -762,7 +753,7 @@ void vTaskAdd(void *pvParameters)
 
 			xQueueSend(QAddedLoad, (void*)&sHandledLoadStat, portMAX_DELAY);
 		}
-		vTaskDelay(5);
+		vTaskDelay(2);
 	}
 	return;
 }
@@ -822,8 +813,9 @@ int main(int argc, char* argv[], char* envp[])
 void initOSDataStructs(void)
 {
 	/* Create Semaphores */
-	semRoc = xSemaphoreCreateMutex();
+	semThres = xSemaphoreCreateMutex();
 	semTimer = xSemaphoreCreateMutex();
+	semResp = xSemaphoreCreateMutex();
 
 	/* Create Queues */
 	QFreqData = xQueueCreate(20, sizeof(double));
