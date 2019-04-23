@@ -3,9 +3,9 @@
 # This script creates the hello_world application in this directory.
 
 
-BSP_DIR=../723_Assignment1_bsp
+BSP_DIR=../Assignment1_bsp
 QUARTUS_PROJECT_DIR=../../
-NIOS2_APP_GEN_ARGS="--elf-name 723_Assignment1.elf --set OBJDUMP_INCLUDE_SOURCE 1 --src-files hello_world.c"
+NIOS2_APP_GEN_ARGS="--elf-name Assignment1.elf --set OBJDUMP_INCLUDE_SOURCE 1 --src-files hello_world.c"
 
 
 # First, check to see if $SOPC_KIT_NIOS2 environmental variable is set.

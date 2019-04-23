@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
-	<name>723_Assignment1</name>
+	<name>Assignment1</name>
 	<comment></comment>
 	<projects>
-		<project>723_Assignment1_bsp</project>
 	</projects>
 	<buildSpec>
 		<buildCommand>

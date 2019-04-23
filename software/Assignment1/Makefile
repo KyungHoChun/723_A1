@@ -139,10 +139,9 @@ ACDS_VERSION := 16.1
 # Define path to the application ELF. 
 # It may be used by the makefile fragments so is defined before including them. 
 # 
-ELF := 723_Assignment1.elf
+ELF := Assignment1.elf
 
 # Paths to C, C++, and assembly source files.
-C_SRCS += 723_Assignment1.c
 C_SRCS += FreeRTOS/croutine.c
 C_SRCS += FreeRTOS/event_groups.c
 C_SRCS += FreeRTOS/heap.c
@@ -151,6 +150,7 @@ C_SRCS += FreeRTOS/port.c
 C_SRCS += FreeRTOS/queue.c
 C_SRCS += FreeRTOS/tasks.c
 C_SRCS += FreeRTOS/timers.c
+C_SRCS += 723_Assignment1.c
 CXX_SRCS :=
 ASM_SRCS := FreeRTOS/port_asm.S
 
@@ -185,7 +185,7 @@ CRT0 :=
 SYS_LIB :=
 
 # Define path to the root of the BSP.
-BSP_ROOT_DIR := ../723_Assignment1_bsp/
+BSP_ROOT_DIR := ../Assignment1_bsp/
 
 # List of application specific include directories, library directories and library names
 APP_INCLUDE_DIRS :=

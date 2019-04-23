@@ -109,7 +109,6 @@ void initCreateTasks(void);
 #define ROCPLT_ROC_RES 0.5		//number of pixels per Hz/s (y axis scale)
 
 #define MIN_FREQ 45.0 //minimum frequency to draw
-#define PRVGADraw_Task_P (tskIDLE_PRIORITY+1)
 
 TaskHandle_t PRVGADraw;
 
@@ -127,7 +126,7 @@ FILE *lcd;
 #define CLEAR_LCD_STRING "[2J"
 
 /* VGA Display */
-void PRVGADraw_Task(void *pvParameters){
+void vTaskPRVGADraw(void *pvParameters){
 	/* Initialize VGA controllers */
 	alt_up_pixel_buffer_dma_dev *pixel_buf;
 	pixel_buf = alt_up_pixel_buffer_dma_open_dev(VIDEO_PIXEL_BUFFER_DMA_NAME);
@@ -169,7 +168,7 @@ void PRVGADraw_Task(void *pvParameters){
 	alt_up_char_buffer_string(char_buf, "723 Assignment 1 - Group 10", 4, 0);
 	alt_up_char_buffer_string(char_buf, "Kyung Ho Chun & Yunseung Lee", 4, 2);
 
-	alt_up_char_buffer_string(char_buf, "System Active Time (ms):", 42, 2);
+	alt_up_char_buffer_string(char_buf, "System Active Time (s):", 42, 2);
 
 	alt_up_char_buffer_string(char_buf, "Frequency Threshold(Hz):", 4, 40);
 	alt_up_char_buffer_string(char_buf, "RoC Threshold(Hz):", 4, 43);
@@ -247,7 +246,7 @@ void PRVGADraw_Task(void *pvParameters){
 		/* Receive the stability status of the system */
 		if(uxQueueMessagesWaiting(QStability) != 0)
 		{
-			xQueueReceive(QStability,  (void *) &iVgaStable, portMAX_DELAY);
+			xQueueReceive(QStability, (void *) &iVgaStable, portMAX_DELAY);
 
 			if (iVgaStable == 0)
 			{
@@ -492,6 +491,7 @@ void vTaskLoadManager(void * pvParameters)
 	{
 		if(xQueueReceiveFromISR(QFreqData, &dInFreq, portMAX_DELAY) == pdTRUE)
 		{
+			/* Calculate rate of change */
 			dRocVal = ((dInFreq-dFreqPrev)* SAMPLING_FREQ) / (double) IORD(FREQUENCY_ANALYSER_BASE, 0);
 			dFreqPrev = dInFreq;
 
@@ -508,6 +508,7 @@ void vTaskLoadManager(void * pvParameters)
 				iStable = 1;
 			}
 
+			/* Update switch configuration */
 			if(xQueueReceive(QSwitch, &iCurrentLoad, 0) == pdTRUE && iManagingLoad)
 			{
 				sLoadStat.iCurrentLoad &= iCurrentLoad;
@@ -516,7 +517,8 @@ void vTaskLoadManager(void * pvParameters)
 				sHandledLoadStat.iSheddedLoad &= iCurrentLoad;
 				sHandledLoadStat.iUnSheddedLoad &= iCurrentLoad;
 
-			}else
+			}
+			else
 			{
 				sLoadStat.iCurrentLoad = iCurrentLoad;
 				sLoadStat.iUnSheddedLoad = iCurrentLoad;
@@ -525,10 +527,11 @@ void vTaskLoadManager(void * pvParameters)
 			xQueueSend(QStability, &iStable, 0);
 			xQueueSendToBack(QFreqDataVGA, &dInFreq, 0);
 
+			/* Handle logic in normal mode */
 			if(sLoadStat.iCurrentLoad != 0 && iMode == normal)
 			{
-				// If timer is active (from stable) and has become unstable - reset timer - shed load
-				if(iTimerFlag && !iTimerFin && !iStable && sLoadStat.iUnSheddedLoad > 0)
+				/* If timer is not active and unstable - start timer - shed load */
+				if(!iTimerFlag && !iTimerFin && !iStable && sLoadStat.iUnSheddedLoad > 0)
 				{
 					xSemaphoreTake(semTimer, portMAX_DELAY);
 					iTimerFlag = 1;
@@ -537,17 +540,7 @@ void vTaskLoadManager(void * pvParameters)
 					iTimerActive = 1;
 					tStartTime = xTaskGetTickCount();
 				}
-				// If timer is not active and unstable - start timer - shed load
-				else if(!iTimerFlag && !iTimerFin && !iStable && sLoadStat.iUnSheddedLoad > 0)
-				{
-					xSemaphoreTake(semTimer, portMAX_DELAY);
-					iTimerFlag = 1;
-					xSemaphoreGive(semTimer);
-					iFlagShed = 1;
-					iTimerActive = 1;
-					tStartTime = xTaskGetTickCount();
-				}
-				// If timer has finished and unstable - reset timer - shed load
+				/* If timer has finished and unstable - reset timer - shed load */
 				else if(!iTimerFlag && iTimerFin && !iStable && sLoadStat.iUnSheddedLoad > 0)
 				{
 					xSemaphoreTake(semTimer, portMAX_DELAY);
@@ -558,10 +551,10 @@ void vTaskLoadManager(void * pvParameters)
 					iTimerActive = 1;
 					tStartTime = xTaskGetTickCount();
 				}
-				// If timer has finished (from unstable) and has become stable - reset timer
+				/* If timer has finished (from unstable) and has become stable - reset timer */
 				else if(!iTimerFlag && iTimerFin && iStable)
 				{
-					// if a load was shed - add load
+					/* If a load was shed - add load */
 					if(sLoadStat.iSheddedLoad > 0){
 						xSemaphoreTake(semTimer, pdFALSE);
 						iTimerFin = 0;
@@ -571,6 +564,7 @@ void vTaskLoadManager(void * pvParameters)
 					}
 				}
 
+				/* Start 500ms timer */
 				if(iTimerActive)
 				{
 					iTimerActive = 0;
@@ -580,6 +574,7 @@ void vTaskLoadManager(void * pvParameters)
 					}
 				}
 
+				/* Send message to shed or add tasks */
 				if(iFlagShed == 1)
 				{
 					xQueueSend(QShedLoad, &sLoadStat, portMAX_DELAY);
@@ -597,23 +592,28 @@ void vTaskLoadManager(void * pvParameters)
 			}
 			else
 			{
-				if(iRespTimeFlag)
-				{
-					iRespTimeFlag = 0;
-				}
-				sLoadStat.iSheddedLoad = 0;
-				sLoadStat.iUnSheddedLoad = 0;
-				sHandledLoadStat.iSheddedLoad = 0;
-				sHandledLoadStat.iUnSheddedLoad = 0;
+				/* Reset all flags and switch configuration in maintenance mode */
+				iTimerFin = 0;
+				iTimerActive = 0;
+				iFlagShed = 0;
+				iFlagAdd = 0;
+				iManagingLoad = 0;
+				iRespTimeFlag = 0;
+
+				sLoadStat.iSheddedLoad = 0x00;
+				sLoadStat.iUnSheddedLoad = 0x00;
+				sHandledLoadStat.iSheddedLoad = 0x00;
+				sHandledLoadStat.iUnSheddedLoad = 0x00;
 			}
 
+			/* Logic after receiving new configuration after shed */
 			if (xQueueReceive(QAddedShed, &sHandledLoadStat, 0) == pdTRUE && iFlagShed == 2)
 			{
-
 				iFlagShed = 0;
 				sLoadStat.iSheddedLoad = sHandledLoadStat.iSheddedLoad;
 				sLoadStat.iUnSheddedLoad = sHandledLoadStat.iUnSheddedLoad;
 
+				/* Record the response time to shed */
 				if (iRespTimeFlag == 1)
 				{
 					tEndTime = xTaskGetTickCount();
@@ -644,6 +644,7 @@ void vTaskLoadManager(void * pvParameters)
 					iAvgTime = tSumTime / iRespCount;
 				}
 			}
+			/* Logic after receiving new configuration after add */
 			else if (xQueueReceive(QAddedLoad, &sHandledLoadStat, 0) == pdTRUE && iFlagAdd == 2)
 			{
 				if (sHandledLoadStat.iSheddedLoad == 0)
@@ -655,6 +656,7 @@ void vTaskLoadManager(void * pvParameters)
 				sLoadStat.iUnSheddedLoad = sHandledLoadStat.iUnSheddedLoad;
 			}
 
+			/* Output to red and green LED */
 			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, sLoadStat.iSheddedLoad & 0x1F);
 			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, (sLoadStat.iSheddedLoad ^ sLoadStat.iCurrentLoad) & 0x1F);
 		}
@@ -758,11 +760,13 @@ void vTaskAdd(void *pvParameters)
 	return;
 }
 
-/* Timer function*/
+/* 500ms timer callback function */
 void vTimer500_Callback(xTimerHandle t_timer)
 {
+	xSemaphoreTakeFromISR(semTimer, portMAX_DELAY);
 	iTimerFlag = 0;
 	iTimerFin = 1;
+	xSemaphoreGiveFromISR(semTimer, portMAX_DELAY);
 	return;
 }
 
@@ -831,7 +835,6 @@ void initOSDataStructs(void)
 	QBtn = xQueueCreate(10, sizeof(int));
 
 	QStability = xQueueCreate (1, sizeof (int));
-
 	QKeyboard = xQueueCreate(10, sizeof (char));
 
 	return;
@@ -840,11 +843,11 @@ void initOSDataStructs(void)
 /* This function creates the tasks */
 void initCreateTasks(void)
 {
-	xTaskCreate(PRVGADraw_Task, "PR VGA Draw Task", configMINIMAL_STACK_SIZE, NULL, 6, NULL);
+	xTaskCreate(vTaskPRVGADraw, "PR VGA Draw Task", configMINIMAL_STACK_SIZE, NULL, 6, NULL);
 
+	xTaskCreate(vTaskLoadManager, "Load Manager Task", configMINIMAL_STACK_SIZE, NULL, 5, NULL);
 	xTaskCreate(vTaskAdd, "Add Task", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
 	xTaskCreate(vTaskShed, "Shed Task", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
-	xTaskCreate(vTaskLoadManager, "Load Manager Task", configMINIMAL_STACK_SIZE, NULL, 5, NULL);
 
 	xTaskCreate(vTaskSwitchCon, "Switch Controller Task", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
 	xTaskCreate(vTaskLCDMode, "LCD Mode Task", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
